@@ -1,0 +1,12 @@
+# Local Cloudflare config (do not commit)
+wrangler.toml
+wrangler.*.toml
+
+# Local env files
+.env
+.env.*
+
+# Node artifacts
+node_modules/
+.wrangler/
+

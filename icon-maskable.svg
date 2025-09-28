@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="32" fill="#0b0d10"/>
+  <g>
+    <circle cx="64" cy="64" r="36" fill="#2f81f7"/>
+    <path d="M64 32a32 32 0 1032 32" fill="#30a46c" opacity="0.6"/>
+    <text x="64" y="74" font-family="monospace" font-size="40" text-anchor="middle" fill="#e6edf3">2FA</text>
+  </g>
+</svg>
+

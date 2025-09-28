@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>共享验证码</title>
+    <meta name="theme-color" content="#0b0d10">
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body{display:flex; min-height:100vh; align-items:center; justify-content:center; padding:16px}
+      .share-card{max-width:480px; width:100%;}
+      .share-title{display:flex; justify-content:space-between; align-items:center}
+      .share-title small{color:var(--muted)}
+      .center{display:flex; flex-direction:column; align-items:center; gap:12px}
+      .big{font-size:clamp(28px, 8vw, 44px); font-weight:800; letter-spacing:2px}
+      @media (max-width: 640px){ .period{width:100%} }
+    </style>
+  </head>
+  <body>
+    <main class="card share-card">
+      <div class="share-title">
+        <h2 id="lbl">共享验证码</h2>
+        <small id="algo"></small>
+      </div>
+      <div class="center">
+        <div id="code" class="big">……</div>
+        <div class="period" style="width:100%">
+          <div class="bar"></div>
+          <span class="left"></span>
+        </div>
+        <div class="buttons">
+          <button id="copy">复制</button>
+          <button id="copy-link" class="secondary">复制链接</button>
+        </div>
+      </div>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="shared.js" type="module"></script>
+  </body>
+  </html>

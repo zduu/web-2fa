@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>访问验证</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body{display:flex; min-height:100vh; align-items:center; justify-content:center}
+      .panel{max-width:420px; width:92%}
+    </style>
+  </head>
+  <body>
+    <main class="card panel">
+      <h2>访问验证</h2>
+      <p class="hint">此站点已启用远程访问口令，请输入后继续。</p>
+      <label>
+        访问口令
+        <input id="gate-pass" type="password" placeholder="请输入口令" />
+      </label>
+      <div class="buttons">
+        <button id="gate-ok">进入</button>
+      </div>
+      <div id="gate-msg" class="hint"></div>
+    </main>
+    <script>
+      const $=q=>document.querySelector(q);
+      $('#gate-ok').addEventListener('click', async ()=>{
+        const pw = $('#gate-pass').value;
+        if (!pw) { $('#gate-msg').textContent='请输入口令'; return; }
+        const res = await fetch('/api/gate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: pw }) });
+        if (res.ok) { location.href = '/'; }
+        else { $('#gate-msg').textContent='口令错误，请重试'; }
+      });
+      document.addEventListener('keydown', e=>{ if (e.key==='Enter') $('#gate-ok').click(); });
+    </script>
+  </body>
+  </html>
+

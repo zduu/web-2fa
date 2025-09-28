@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web 2FA Authenticator</title>
+    <meta name="theme-color" content="#0b0d10">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Web 2FA Authenticator</h1>
+      <div class="actions">
+        <button id="btn-add">添加账户</button>
+        <button id="btn-scan">扫码导入</button>
+        <button id="btn-import">导入</button>
+        <button id="btn-export">导出</button>
+        <button id="btn-sync">同步</button>
+        <button id="btn-shares">分享管理</button>
+        <button id="btn-password">密码/解锁</button>
+        <span id="sync-status" class="sync-status" title="同步状态">未同步</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="notice" class="notice">
+        <p>完全在浏览器本地运行。数据默认保存在本地（可选设置主密码加密）。兼容 otpauth 协议，可用于大多数网站的 Google/Microsoft Authenticator 设置二维码。</p>
+      </section>
+
+      <section id="add-form" class="card hidden">
+        <h2>添加账户（粘贴 otpauth 链接或手动）</h2>
+        <textarea id="otpauth-input" placeholder="支持 otpauth://... 以及 otpauth-migration://offline?data=..."></textarea>
+        <div class="or">或</div>
+        <div class="grid">
+          <label>
+            类型
+            <select id="type">
+              <option value="totp">TOTP（基于时间）</option>
+              <option value="hotp">HOTP（基于计数器）</option>
+            </select>
+          </label>
+          <label>
+            Issuer/服务名
+            <input id="issuer" />
+          </label>
+          <label>
+            账号/标签
+            <input id="account" />
+          </label>
+          <label>
+            Secret (Base32，可含空格分组)
+            <input id="secret" placeholder="例如：HKGZ HPK2 T7VV GP7Q 6CGG 6KKC UKLQ 4JAL" />
+          </label>
+          <label>
+            算法
+            <select id="algorithm">
+              <option>SHA1</option>
+              <option>SHA256</option>
+              <option>SHA512</option>
+            </select>
+          </label>
+          <label>
+            位数
+            <select id="digits">
+              <option>6</option>
+              <option>8</option>
+            </select>
+          </label>
+          <label id="period-row">
+            周期 (s)
+            <input id="period" type="number" value="30" min="5" />
+          </label>
+          <label id="counter-row" class="hidden">
+            计数器（HOTP）
+            <input id="counter" type="number" value="0" min="0" />
+          </label>
+        </div>
+        <div class="buttons">
+          <button id="add-confirm">添加</button>
+          <button id="add-cancel" class="secondary">取消</button>
+        </div>
+      </section>
+
+      <section id="scan-form" class="card hidden">
+        <h2>扫码导入</h2>
+        <div id="scan-support" class="hint"></div>
+        <div class="scanner">
+          <video id="video" playsinline></video>
+          <canvas id="canvas" class="hidden"></canvas>
+        </div>
+        <div class="buttons">
+          <button id="scan-start">开始扫描</button>
+          <button id="scan-stop" class="secondary">停止</button>
+          <input type="file" id="file-input" accept="image/*" />
+        </div>
+      </section>
+
+      <section class="list" id="list"></section>
+
+      <section id="sync-form" class="card hidden">
+        <h2>多设备同步（Cloudflare Pages + KV）</h2>
+        <p class="hint">数据在本地端到端加密后同步到你的 Cloudflare KV。确保为 Pages Functions 绑定一个 KV（名称：AUTH_KV），并可选设置环境变量 SYNC_TOKEN。</p>
+        <div class="grid">
+          <label>
+            Sync ID（自定义，区分你的数据）
+            <input id="sync-id" placeholder="例如：my-user-id" />
+          </label>
+          <label>
+            Sync Secret（用于端到端加密）
+            <input id="sync-secret" placeholder="仅本地保存，跨设备需一致" />
+          </label>
+          <label>
+            Server Token（可选，若后端开启）
+            <input id="sync-token" placeholder="与后端 SYNC_TOKEN 相同" />
+          </label>
+          <label>
+            自动同步
+            <div class="row">
+              <input id="sync-auto" type="checkbox" />
+              <span class="hint">启用后：启动时尝试拉取；保存后自动推送；每 60 秒自动拉取。</span>
+            </div>
+          </label>
+        </div>
+        <div class="buttons">
+          <button id="sync-push">推送到云端</button>
+          <button id="sync-pull" class="secondary">从云端拉取</button>
+          <button id="sync-clean" class="secondary">清理已删除</button>
+          <button id="share-revoke" class="secondary">撤销分享</button>
+          <button id="sync-close" class="secondary">关闭</button>
+        </div>
+      </section>
+    </main>
+
+    <template id="tpl-item">
+      <div class="item card">
+        <div class="meta">
+          <div class="issuer"></div>
+          <div class="account"></div>
+        </div>
+        <div class="code-wrap">
+          <div class="code"></div>
+          <div class="period">
+            <div class="bar"></div>
+            <span class="left"></span>
+          </div>
+        </div>
+        <div class="item-actions">
+          <button class="copy">复制</button>
+          <button class="share secondary">分享</button>
+          <button class="next secondary hidden">下一次(HOTP)</button>
+          <button class="remove secondary">删除</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- Share TTL modal -->
+    <div id="share-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card">
+        <h3>设置分享有效期</h3>
+        <div class="grid">
+          <label class="row">
+            <input type="radio" name="share-ttl" value="default" checked />
+            <span>默认（后端配置，通常 24 小时）</span>
+          </label>
+          <label class="row">
+            <input type="radio" name="share-ttl" value="1h" />
+            <span>1 小时</span>
+          </label>
+          <label class="row">
+            <input type="radio" name="share-ttl" value="24h" />
+            <span>24 小时</span>
+          </label>
+          <label class="row">
+            <input type="radio" name="share-ttl" value="perm" />
+            <span>永久（不自动过期）</span>
+          </label>
+          <label class="row">
+            <input type="radio" name="share-ttl" value="custom" />
+            <span>自定义（小时）</span>
+            <input id="share-custom-hours" type="number" min="0" step="0.5" placeholder="如 1.5" style="max-width:120px" />
+          </label>
+        </div>
+        <div class="buttons">
+          <button id="share-confirm">生成链接</button>
+          <button id="share-cancel" class="secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- Global access gate modal (server-side ACCESS_GATE) -->
+    <div id="gate-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card">
+        <h3>访问口令</h3>
+        <p class="hint">此站点启用了访问口令，请输入后继续。</p>
+        <label>
+          口令
+          <input id="gate-pass" type="password" placeholder="请输入访问口令" />
+        </label>
+        <div class="buttons">
+          <button id="gate-submit">进入</button>
+        </div>
+        <div id="gate-msg" class="hint"></div>
+      </div>
+    </div>
+
+    <script src="app.js" type="module"></script>
+  </body>
+  </html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>分享管理</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body{padding:20px}
+      .wrap{max-width:900px;margin:0 auto}
+      .rowx{display:flex; gap:8px; align-items:center}
+      .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .sid{font-size:12px;color:var(--muted)}
+      .status-ok{color:#30a46c}
+      .status-miss{color:#ff6464}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h2>分享管理</h2>
+      <p class="hint">此页从本地数据中读取分享记录（不显示云端全部）。若本地已加密，请输入主密码以解锁。</p>
+      <div class="card" id="unlock-card">
+        <div class="rowx">
+          <input id="unlock-pass" type="password" placeholder="主密码（若未设置可留空）" />
+          <button id="unlock-btn">解锁</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="rowx">
+          <input id="server-token" placeholder="Server Token（如启用）" />
+          <button id="refresh">刷新本地记录</button>
+          <button id="clean-missing" class="secondary">清理无效引用</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="rowx">
+          <button id="cloud-load">加载云端分享（需 Server Token）</button>
+          <button id="cloud-reload" class="secondary">刷新</button>
+          <span class="hint">云端列表仅包含 SID，无法恢复解密密钥（#k）。</span>
+        </div>
+      </div>
+      <h3>本地分享记录</h3>
+      <div id="list" class="list"></div>
+      <h3>云端分享（KV）</h3>
+      <div id="cloud-list" class="list"></div>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="shares.js" type="module"></script>
+  </body>
+  </html>

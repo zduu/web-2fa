@@ -1,0 +1,10 @@
+{
+  "name": "web-2fa-authenticator",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "wrangler pages dev .",
+    "dev:https": "wrangler pages dev . --local-protocol https",
+    "dev:remote": "wrangler pages dev . --remote"
+  }
+}

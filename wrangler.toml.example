@@ -1,0 +1,14 @@
+name = "web-2fa-authenticator"
+compatibility_date = "2024-05-01"
+
+# 用于 Pages Functions 本地开发：
+# 复制为 wrangler.toml 并填写你的 KV 命名空间 id/preview_id
+
+kv_namespaces = [
+  { binding = "AUTH_KV", id = "<your_kv_id>", preview_id = "<your_kv_preview_id>" }
+]
+
+[vars]
+# 可选：与客户端填写的 Server Token 一致
+SYNC_TOKEN = "change-me"
+
