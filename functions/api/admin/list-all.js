@@ -10,8 +10,8 @@ export async function onRequestPost(context) {
       success: false,
       error: 'KV_ADMIN_KEY not configured on server'
     }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Note': 'kv_admin_key_missing' }
     });
   }
 
@@ -77,8 +77,8 @@ export async function onRequestPost(context) {
       success: false,
       error: 'Server Error'
     }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Note': 'error' }
     });
   }
 }

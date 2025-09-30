@@ -104,8 +104,8 @@
 
 1️⃣ **克隆项目**
 ```bash
-git clone <your-repo-url>
-cd 2fa
+git clone https://github.com/zduu/web-2fa.git
+cd web-2fa
 ```
 
 2️⃣ **配置 KV**

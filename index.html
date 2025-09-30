@@ -294,6 +294,40 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+    <!-- Import Encrypted Modal -->
+    <div id="import-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card" style="max-width: 560px; width: 95vw;">
+        <h3>导入加密包</h3>
+        <p class="hint">请输入导出包密码并选择合并策略。导入目标为当前项目。</p>
+        <label>
+          导出包密码
+          <div class="token-input-wrapper">
+            <input id="import-pass" type="password" placeholder="请输入密码" />
+            <button type="button" id="import-pass-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
+          </div>
+        </label>
+        <label>
+          合并策略
+          <div class="row" style="gap:12px; align-items:center; flex-wrap:wrap;">
+            <label class="row" style="flex-direction:row; gap:6px; margin:0;"><input type="radio" name="import-merge" value="overwrite" checked /> 覆盖重复</label>
+            <label class="row" style="flex-direction:row; gap:6px; margin:0;"><input type="radio" name="import-merge" value="skip" /> 跳过重复</label>
+            <label class="row" style="flex-direction:row; gap:6px; margin:0;"><input type="radio" name="import-merge" value="keepboth" /> 保留两者</label>
+          </div>
+        </label>
+        <div class="sub-card">
+          <h4>预检查摘要</h4>
+          <div id="import-summary" class="hint">尚未解密，请点击“预检查/解密”。</div>
+          <div id="import-preview" class="list" style="margin-top:8px;"></div>
+        </div>
+        <div class="buttons">
+          <button id="import-check">预检查/解密</button>
+          <button id="import-confirm" class="secondary" disabled>导入</button>
+          <button id="import-cancel" class="secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Global access gate modal (server-side ACCESS_GATE) -->
     <div id="gate-modal" class="modal hidden" aria-hidden="true">
       <div class="modal-backdrop"></div>
@@ -368,10 +402,42 @@
               <button type="button" id="cloud-browse-secret-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
             </div>
           </label>
+          <div class="sub-card">
+            <h4>🔐 密钥托管（可选，需管理员公钥）</h4>
+            <label class="row" style="display:flex; align-items:center; gap:8px; margin:0 0 8px 0;">
+              <input type="checkbox" id="vault-enable" />
+              <span>启用密钥托管/找回（默认关闭）</span>
+            </label>
+            <label>
+              管理员公钥（RSA-OAEP，PEM/SPKI 或 Base64 DER）
+              <input id="vault-pubkey" placeholder="-----BEGIN PUBLIC KEY----- ..." />
+            </label>
+            <div class="buttons">
+              <button id="vault-save-selected" class="secondary">托管选中项目密钥</button>
+              <button id="vault-recover-selected" class="secondary">找回选中项目密钥</button>
+              <button id="migrate-selected" class="secondary">批量密钥迁移（选中）</button>
+            </div>
+          </div>
           <div id="cloud-allcodes" class="hidden" style="margin-top: 12px;">
             <h4>全部云端验证码</h4>
             <div id="cloud-allcodes-list" class="list"></div>
             <div id="cloud-allcodes-msg" class="hint" style="margin-top: 8px;"></div>
+            <div class="buttons" style="margin-top: 12px; flex-wrap: wrap;">
+              <select id="cloud-export-format">
+                <option value="otpauth">导出为 otpauth 链接 (.txt)</option>
+                <option value="json">导出为 JSON（包含密钥与 otpauth）</option>
+                <option value="csv">导出为 CSV</option>
+              </select>
+              <label class="row" style="display:flex; align-items:center; gap:6px; margin:0;">
+                <input type="checkbox" id="cloud-export-split" />
+                <span>按项目分文件导出</span>
+              </label>
+              <label class="row" style="display:flex; align-items:center; gap:6px; margin:0;">
+                <input type="checkbox" id="cloud-export-selected-only" />
+                <span>只导出选中项目</span>
+              </label>
+              <button id="cloud-export-all">导出全部（已解密）</button>
+            </div>
           </div>
         </div>
 

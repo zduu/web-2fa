@@ -39,6 +39,13 @@ export const onRequest = async (ctx) => {
       if (!hasCookie) return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store', 'X-Gate': 'required' } });
       return await ctx.next();
     }
+    // Allow vault with valid X-Token regardless of cookie (optional feature)
+    if (path.startsWith('/api/vault/')) {
+      const token = request.headers.get('X-Token');
+      if (env.SYNC_TOKEN && token === env.SYNC_TOKEN) return await ctx.next();
+      if (!hasCookie) return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store', 'X-Gate': 'required' } });
+      return await ctx.next();
+    }
     // Allow share GET/HEAD without cookie; for PUT/DELETE allow if X-Token matches SYNC_TOKEN
     if (path.startsWith('/api/share/')) {
       if (request.method === 'GET' || request.method === 'HEAD') return await ctx.next();

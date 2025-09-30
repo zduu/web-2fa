@@ -12,6 +12,10 @@ const state = {
   globalToken: "",
   gateRequired: false,
   cloudProjects: [],
+  cloudAggregatedItems: [],
+  cloudSelectedProjects: new Set(),
+  importPkg: null,
+  importItems: [],
 };
 
 // ---------- Utils ----------
@@ -280,7 +284,7 @@ function parseOtpAuthMigration(uriOrData) {
 const LS_KEY = "authenticator.v1";
 const LS_META = "authenticator.v1.meta";
 
-async function deriveKey(password, salt) {
+async function deriveKey(password, salt, iterations = 150000) {
   const enc = new TextEncoder();
   const baseKey = await crypto.subtle.importKey(
     "raw",
@@ -290,7 +294,7 @@ async function deriveKey(password, salt) {
     ["deriveKey"]
   );
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 150000, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false,
@@ -493,18 +497,44 @@ function load() {
 }
 
 function exportData() {
-  const blob = new Blob([
-    localStorage.getItem(LS_META) ? JSON.stringify({
-      encrypted: true,
-      meta: JSON.parse(localStorage.getItem(LS_META) || "{}"),
-      data: localStorage.getItem(LS_KEY),
-    }, null, 2) : JSON.stringify({ encrypted: false, data: JSON.parse(localStorage.getItem(LS_KEY) || "{}") }, null, 2)
-  ], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `authenticator-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  // Only export current concrete project; forbid exporting from "全部项目"
+  if (!state.currentProjectId || state.currentProjectId === '_all_') {
+    alert('请切换到具体项目后再导出。全部云端数据请在“云端浏览（管理员）”中导出。');
+    return;
+  }
+  const proj = getCurrentProject();
+  if (!proj) { alert('未找到当前项目'); return; }
+  const items = Array.isArray(proj.itemsData) ? proj.itemsData.slice() : [];
+  // Filter deleted and de-duplicate by stable key (pick latest by updatedAt)
+  const map = new Map();
+  for (const it of items) {
+    if (it.deleted) continue;
+    const key = itemKey(it);
+    const prev = map.get(key);
+    if (!prev || (Number(it.updatedAt||0) >= Number(prev.updatedAt||0))) map.set(key, it);
+  }
+  const cleaned = Array.from(map.values());
+  const data = { items: cleaned };
+  const pass = prompt('可选：输入导出密码以加密导出（留空则明文导出）');
+  const ts = Date.now();
+  if (pass && pass.trim()) {
+    // Encrypted export (AES-GCM, PBKDF2-SHA256 200k)
+    (async () => {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const key = await deriveKey(pass.trim(), salt, 200000);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const pt = new TextEncoder().encode(JSON.stringify({ encrypted: false, data }));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt));
+      const payload = { encrypted: true, v: 3, kdf: 'PBKDF2-SHA256-200k', saltB64: toB64(salt), iv: toB64(iv), ct: toB64(ct), meta: { project: proj.syncId || '' } };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `authenticator-encrypted-${proj.syncId || 'project'}-${ts}.json`; a.click(); URL.revokeObjectURL(url);
+    })();
+  } else {
+    const blob = new Blob([JSON.stringify({ encrypted: false, data }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `authenticator-${proj.syncId || 'project'}-${ts}.json`; a.click(); URL.revokeObjectURL(url);
+  }
 }
 
 async function importData() {
@@ -515,19 +545,31 @@ async function importData() {
     const text = await file.text();
     try {
       const obj = JSON.parse(text);
-      if (obj.encrypted) {
+      // New encrypted export package (v3): { encrypted:true, v:3, iv, ct, saltB64, kdf }
+      if (obj && obj.encrypted === true && obj.ct && obj.iv && obj.saltB64) {
+        if (!state.currentProjectId || state.currentProjectId === '_all_') { alert('请切换到具体项目后再导入。'); return; }
+        state.importPkg = obj; state.importItems = [];
+        openImportModal(); return;
+      }
+
+      // Plain export (per-project)
+      if (obj && obj.encrypted === false && obj.data) {
+        if (!state.currentProjectId || state.currentProjectId === '_all_') { alert('请切换到具体项目后再导入。'); return; }
+        await importIntoCurrentProject(((obj.data || {}).items) || []);
+        return;
+      }
+
+      // Legacy full-store encrypted export (fallback)
+      if (obj && obj.encrypted && obj.meta && obj.data) {
         localStorage.setItem(LS_META, JSON.stringify(obj.meta || {}));
         localStorage.setItem(LS_KEY, obj.data || "");
         state.key = null; state.encMeta = null; state.unlocked = false; state.items = [];
-        toast("已导入加密数据，点击‘密码/解锁’解锁", 'ok');
-      } else {
-        localStorage.setItem(LS_KEY, JSON.stringify(obj.data || { items: [] }));
-        localStorage.removeItem(LS_META);
-        state.items = ((obj.data || {}).items || []).map(ensureItemDefaults);
-        state.unlocked = true;
-        toast("数据已导入", 'ok');
+        render();
+        toast('已导入加密数据，点击“密码/解锁”解锁', 'ok');
+        return;
       }
-      render();
+
+      alert('文件格式不支持。');
     } catch (e) {
       console.error(e);
       alert("导入失败：文件格式不正确。");
@@ -535,6 +577,118 @@ async function importData() {
     }
   };
   input.click();
+}
+
+function openImportModal() {
+  const modal = byId('import-modal'); if (!modal) return;
+  byId('import-summary').textContent = '尚未解密，请点击“预检查/解密”。';
+  byId('import-preview').innerHTML = '';
+  const confirmBtn = byId('import-confirm'); if (confirmBtn) confirmBtn.disabled = true;
+  const input = byId('import-pass'); if (input) { input.value=''; input.focus(); }
+  modal.classList.remove('hidden'); modal.setAttribute('aria-hidden','false');
+}
+
+function closeImportModal() {
+  const modal = byId('import-modal'); if (!modal) return;
+  modal.classList.add('hidden'); modal.setAttribute('aria-hidden','true');
+  state.importPkg = null; state.importItems = [];
+}
+
+async function handleImportPrecheck() {
+  if (!state.importPkg) { alert('未载入导入包'); return; }
+  const pass = byId('import-pass')?.value?.trim(); if (!pass) { alert('请输入密码'); return; }
+  // derive iterations
+  let iter = 200000; const kdf = state.importPkg.kdf;
+  if (typeof kdf === 'string') { const m = kdf.match(/(\d+)/); if (m) iter = Number(m[1]) || iter; }
+  try {
+    const key = await deriveKey(pass, fromB64(state.importPkg.saltB64), iter);
+    const iv = fromB64(state.importPkg.iv); const ct = fromB64(state.importPkg.ct);
+    const pt = new Uint8Array(await crypto.subtle.decrypt({ name:'AES-GCM', iv }, key, ct));
+    const inner = JSON.parse(new TextDecoder().decode(pt));
+    const items = ((inner && inner.data) ? inner.data.items : inner.items) || [];
+    state.importItems = items.map(ensureItemDefaults);
+    // Build summary
+    const proj = getCurrentProject(); if (!proj) { alert('未找到当前项目'); return; }
+    const existing = proj.itemsData || [];
+    const existingKeys = new Set(existing.map(itemKey));
+    let dup = 0; let fresh = 0;
+    for (const it of state.importItems) { if (existingKeys.has(itemKey(it))) dup++; else fresh++; }
+    byId('import-summary').textContent = `待导入：${state.importItems.length} 条；其中 新增 ${fresh} 条、可能重复 ${dup} 条。`;
+    // Preview top 8
+    const preview = byId('import-preview'); preview.innerHTML='';
+    for (const it of state.importItems.slice(0, 8)) {
+      const div = document.createElement('div'); div.className='card';
+      div.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center;">
+        <div><div style="font-weight:600;">${escapeHtml(it.issuer||'')} ${it.account?('· '+escapeHtml(it.account)) : ''}</div>
+        <div class="hint">${escapeHtml((it.type||'totp').toUpperCase())} · ${escapeHtml((it.algorithm||'SHA1').toUpperCase())} · ${escapeHtml(String(it.digits||6))}</div></div>
+        <div class="mono" style="font-size:12px; opacity:0.8;">${(it.secret||'').slice(0,4)}••••</div>
+      </div>`;
+      preview.appendChild(div);
+    }
+    const confirmBtn = byId('import-confirm'); if (confirmBtn) confirmBtn.disabled = false;
+    toast('解密成功，可点击导入', 'ok');
+  } catch (e) {
+    console.error(e); byId('import-summary').textContent = '解密失败，请检查密码后重试。';
+  }
+}
+
+async function handleImportConfirm() {
+  if (!state.importItems || !state.importItems.length) { alert('请先预检查/解密'); return; }
+  const strat = (document.querySelector('input[name="import-merge"]:checked')?.value) || 'overwrite';
+  await importIntoCurrentProject(state.importItems, strat);
+  closeImportModal();
+}
+
+async function importIntoCurrentProject(rawItems, strategy) {
+  const proj = getCurrentProject();
+  if (!proj) { alert('未找到当前项目'); return; }
+  const imported = Array.isArray(rawItems) ? rawItems.map(ensureItemDefaults) : [];
+  // De-duplicate imported by itemKey keeping latest updatedAt
+  const impMap = new Map();
+  for (const it of imported) {
+    const k = itemKey(it);
+    const prev = impMap.get(k);
+    if (!prev || Number(it.updatedAt||0) >= Number(prev.updatedAt||0)) impMap.set(k, it);
+  }
+  const items = proj.itemsData || [];
+  const existingByKey = new Map(items.map(it => [itemKey(it), it]));
+  const strat = (strategy || (prompt('合并策略：输入 skip（跳过重复）/ overwrite（覆盖重复）/ keepboth（保留两者）', 'overwrite') || 'overwrite')).toLowerCase();
+  let added=0, updated=0, kept=0;
+  for (const [k, it] of impMap.entries()) {
+    const exist = existingByKey.get(k);
+    if (!exist) {
+      const copy = { ...it, id: it.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`, deleted: !!it.deleted };
+      items.push(copy); added++;
+    } else {
+      if (strat.startsWith('skip') || strat.startsWith('跳')) { kept++; continue; }
+      if (strat.startsWith('keep')) {
+        const copy = { ...it, id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}` };
+        items.push(copy); added++; continue;
+      }
+      // overwrite: update existing in place, preserve id, merge shares
+      const sharesA = Array.isArray(exist.shares)?exist.shares:[];
+      const sharesB = Array.isArray(it.shares)?it.shares:[];
+      const bySid = new Map();
+      for (const s of [...sharesA, ...sharesB]) {
+        const entry = (typeof s === 'string') ? { sid: s } : (s && typeof s.sid === 'string' ? { sid: s.sid, k: s.k } : null);
+        if (!entry) continue;
+        if (!bySid.has(entry.sid)) bySid.set(entry.sid, entry); else { const prev = bySid.get(entry.sid); if (!prev.k && entry.k) prev.k = entry.k; }
+      }
+      exist.type = it.type; exist.issuer = it.issuer; exist.account = it.account;
+      exist.secret = (it.secret||'').replace(/\s+/g,'').toUpperCase();
+      exist.algorithm = (it.algorithm||'SHA1').toUpperCase();
+      exist.digits = Number(it.digits||6); exist.period = Number(it.period||30); exist.counter = Number(it.counter||0);
+      exist.deleted = !!it.deleted; exist.updatedAt = Number(it.updatedAt||Date.now());
+      exist.shares = Array.from(bySid.values());
+      updated++;
+    }
+  }
+  proj.itemsData = items;
+  saveSyncProjects();
+  if (state.currentProjectId === proj.id) { state.items = items; render(); }
+  await persist();
+  scheduleAutoPush();
+  toast(`导入完成：新增 ${added}，更新 ${updated}，跳过 ${kept}`, 'ok');
 }
 
 function ensureItemDefaults(it) {
@@ -716,13 +870,40 @@ function removeItem(id) {
   toast('已删除', 'ok');
   if (Array.isArray(it.shares) && it.shares.length) {
     const headers = {};
-    if (state.sync?.token) headers['X-Token'] = state.sync.token;
+    const token = getGlobalToken(); if (token) headers['X-Token'] = token;
     it.shares.forEach(async (entry) => {
       const sid = typeof entry === 'string' ? entry : entry?.sid;
       if (!sid) return;
       try { await fetch(`/api/share/${encodeURIComponent(sid)}`, { method:'DELETE', headers }); } catch {}
     });
   }
+}
+
+async function removeItemInProject(item) {
+  const pid = item._projectId;
+  const proj = state.syncProjects.find(p => p.id === pid);
+  if (!proj) { toast('未找到源项目', 'err'); return; }
+  if (!Array.isArray(proj.itemsData)) proj.itemsData = [];
+  const idx = proj.itemsData.findIndex(x => x.id === item.id);
+  if (idx === -1) { toast('源项目不存在该条目', 'warn'); return; }
+  const target = proj.itemsData[idx];
+  target.deleted = true; target.updatedAt = Date.now();
+  // Revoke shares on server if possible
+  const token = getGlobalToken();
+  const headers = token ? { 'X-Token': token } : {};
+  const shares = Array.isArray(target.shares) ? target.shares : [];
+  for (const entry of shares) {
+    const sid = typeof entry === 'string' ? entry : entry?.sid;
+    if (!sid) continue;
+    try { await fetch(`/api/share/${encodeURIComponent(sid)}`, { method:'DELETE', headers }); } catch {}
+  }
+  saveSyncProjects();
+  // Update aggregate view
+  item.deleted = true;
+  render();
+  toast('已删除', 'ok');
+  // Best effort push to cloud for that project
+  try { await pushProject(proj); } catch {}
 }
 
 async function codeForItem(item) {
@@ -840,19 +1021,24 @@ function render() {
     node.querySelector('.share').addEventListener('click', async () => {
       try {
         const qs = await chooseShareTTL();
-        const url = await shareItem(item, qs);
+        let url;
+        if (isAllView) {
+          url = await shareItemForProject(item, qs);
+        } else {
+          url = await shareItem(item, qs);
+        }
         const ok = await copyTextToClipboard(url);
         toast(ok ? '分享链接已复制' : '复制失败', ok ? 'ok' : 'err');
       } catch (e) {
         console.error(e); toast(`分享失败${e.status?('：'+e.status):''}`, 'err');
       }
     });
-    node.querySelector(".remove").addEventListener("click", () => {
+    node.querySelector(".remove").addEventListener("click", async () => {
       if (isAllView) {
-        toast('汇总视图不可删除，请切换到具体项目', 'warn');
-        return;
+        await removeItemInProject(item);
+      } else {
+        removeItem(item.id);
       }
-      removeItem(item.id);
     });
     list.appendChild(node);
   }
@@ -1022,9 +1208,19 @@ async function loadCloudProjects() {
         const header = document.createElement("div");
         header.className = "cloud-project-header";
 
+        const idWrap = document.createElement('div');
+        idWrap.style.display = 'flex'; idWrap.style.alignItems='center'; idWrap.style.gap='8px';
+        const sel = document.createElement('input'); sel.type='checkbox'; sel.title='选择导出'; sel.className='cloud-proj-select'; sel.dataset.syncId = proj.syncId || '';
+        try { if (state.cloudSelectedProjects && state.cloudSelectedProjects.has(proj.syncId)) sel.checked = true; } catch {}
+        sel.addEventListener('change', () => {
+          if (!state.cloudSelectedProjects) state.cloudSelectedProjects = new Set();
+          if (sel.checked) state.cloudSelectedProjects.add(proj.syncId);
+          else state.cloudSelectedProjects.delete(proj.syncId);
+        });
         const idEl = document.createElement("div");
         idEl.className = "cloud-project-id";
         idEl.textContent = proj.syncId || "未知";
+        idWrap.appendChild(sel); idWrap.appendChild(idEl);
 
         const actionsEl = document.createElement("div");
         actionsEl.className = "cloud-project-actions";
@@ -1043,7 +1239,7 @@ async function loadCloudProjects() {
 
         actionsEl.appendChild(importBtn);
         actionsEl.appendChild(deleteBtn);
-        header.appendChild(idEl);
+        header.appendChild(idWrap);
         header.appendChild(actionsEl);
 
         const metaEl = document.createElement("div");
@@ -1366,6 +1562,38 @@ function bindEvents() {
   if (cloudSecret) cloudSecret.addEventListener('change', () => { if (cloudShowAll && cloudShowAll.checked) renderAllCloudCodes(); });
   if (cloudSecretToggle && cloudSecret) cloudSecretToggle.addEventListener('click', () => { const isPwd = cloudSecret.type === 'password'; cloudSecret.type = isPwd ? 'text' : 'password'; cloudSecretToggle.textContent = isPwd ? '🙈' : '👁️'; });
 
+  // Cloud export (decrypted)
+  const cloudExportAll = byId('cloud-export-all');
+  if (cloudExportAll) cloudExportAll.addEventListener('click', exportAllCloudDecrypted);
+
+  // Vault (key escrow)
+  const vaultEnable = byId('vault-enable');
+  const vaultSave = byId('vault-save-selected');
+  const vaultRecover = byId('vault-recover-selected');
+  const migrateBtn = byId('migrate-selected');
+  if (vaultEnable) vaultEnable.addEventListener('change', () => { localStorage.setItem('vault.enabled', vaultEnable.checked ? '1' : ''); });
+  if (vaultEnable) { const v = localStorage.getItem('vault.enabled') === '1'; vaultEnable.checked = v; }
+  if (byId('vault-pubkey')) { const saved = localStorage.getItem('vault.pubkey') || ''; if (saved) byId('vault-pubkey').value = saved; }
+  if (byId('vault-pubkey')) byId('vault-pubkey').addEventListener('change', () => { localStorage.setItem('vault.pubkey', byId('vault-pubkey').value || ''); });
+  if (vaultSave) vaultSave.addEventListener('click', escrowSelectedProjects);
+  if (vaultRecover) vaultRecover.addEventListener('click', recoverSelectedProjects);
+  if (migrateBtn) migrateBtn.addEventListener('click', migrateSelectedProjects);
+
+  // Import encrypted modal controls
+  const importPass = byId('import-pass');
+  const importPassToggle = byId('import-pass-toggle');
+  const importCheck = byId('import-check');
+  const importConfirm = byId('import-confirm');
+  const importCancel = byId('import-cancel');
+  if (importPassToggle && importPass) {
+    importPassToggle.addEventListener('click', () => {
+      const isPwd = importPass.type === 'password'; importPass.type = isPwd ? 'text' : 'password'; importPassToggle.textContent = isPwd ? '🙈' : '👁️';
+    });
+  }
+  if (importCheck) importCheck.addEventListener('click', handleImportPrecheck);
+  if (importConfirm) importConfirm.addEventListener('click', handleImportConfirm);
+  if (importCancel) importCancel.addEventListener('click', closeImportModal);
+
   // Shares
   const sharesClose = byId("shares-close");
   if (sharesClose) sharesClose.addEventListener("click", () => byId("shares-form").classList.add("hidden"));
@@ -1559,32 +1787,37 @@ function escapeHtml(str) {
 }
 
 function switchToProject(projectId) {
-  const project = state.syncProjects.find(p => p.id === projectId);
-  if (!project) return;
-
   // Save current project items before switching
   saveCurrentProjectItems();
 
-  // Switch to new project
+  // Switch to new project id
   state.currentProjectId = projectId;
 
-  // Special handling for "all" project
   if (projectId === '_all_') {
-    // Merge all projects' items
+    // Build aggregated read-only view across all projects
     state.items = [];
     state.syncProjects.forEach(p => {
-      if (p.id !== '_all_' && p.itemsData) {
+      if (p && p.itemsData) {
         state.items = state.items.concat(p.itemsData.map(item => ({
           ...item,
+          _projectId: p.id,
           _projectName: p.name || '未命名项目'
         })));
       }
     });
-  } else {
-    state.items = project.itemsData || [];
+    // Do not override state.sync here to avoid accidental cross-project actions
+    saveSyncProjects();
+    render();
+    renderSyncProjects();
+    toast('已切换到：全部项目（汇总视图）', 'ok');
+    return;
   }
 
-  // Update sync config
+  // Normal project
+  const project = state.syncProjects.find(p => p.id === projectId);
+  if (!project) return;
+  state.items = project.itemsData || [];
+  // Update sync config for this project
   state.sync = {
     id: project.syncId || "",
     secret: project.secret || "",
@@ -1592,7 +1825,6 @@ function switchToProject(projectId) {
     auto: !!project.auto,
     lastSyncedAt: project.lastSyncedAt || 0
   };
-
   saveSyncProjects();
   render();
   renderSyncProjects();
@@ -1815,45 +2047,46 @@ async function renderAllCloudCodes() {
   msg.textContent = '';
   const aggregated = [];
   let failed = 0;
-  for (const proj of projects) {
-    const id = proj.syncId;
-    try {
-      const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
-      if (!res.ok) { failed++; continue; }
-      const payload = await res.json();
-      // Concurrently try all provided secrets; take the first successful decrypt
-      const attempts = defaultSecrets.map(sec => (async () => {
-        const key = await deriveSyncKey(sec, id);
-        const obj = await syncDecrypt(payload, key);
-        const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
-        return items;
-      })());
-      let items = null;
+  const limit = 5; // concurrency
+  let index = 0;
+  async function worker() {
+    while (index < projects.length) {
+      const i = index++;
+      const proj = projects[i];
+      const id = proj.syncId;
       try {
-        // Prefer Promise.any (first fulfilled); fall back to manual if not available
-        if (typeof Promise.any === 'function') {
-          items = await Promise.any(attempts);
-        } else {
-          items = await new Promise((resolve, reject) => {
-            let pending = attempts.length;
-            attempts.forEach(p => Promise.resolve(p).then(resolve).catch(() => { if (--pending === 0) reject(new Error('all-failed')); }));
-          });
-        }
-      } catch {
-        items = null;
-      }
-      if (items && items.length) {
-        aggregated.push(...items);
-      } else {
-        failed++;
-      }
-    } catch { failed++; }
+        const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
+        if (!res.ok) { failed++; continue; }
+        const payload = await res.json();
+        // Concurrently try all provided secrets; first success wins
+        const attempts = defaultSecrets.map(sec => (async () => {
+          const key = await deriveSyncKey(sec, id);
+          const obj = await syncDecrypt(payload, key);
+          const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
+          return items;
+        })());
+        let items = null;
+        try {
+          if (typeof Promise.any === 'function') items = await Promise.any(attempts);
+          else {
+            items = await new Promise((resolve, reject) => {
+              let pending = attempts.length;
+              attempts.forEach(p => Promise.resolve(p).then(resolve).catch(() => { if (--pending === 0) reject(new Error('all-failed')); }));
+            });
+          }
+        } catch { items = null; }
+        if (items && items.length) aggregated.push(...items); else failed++;
+      } catch { failed++; }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, projects.length) }, () => worker()));
   if (!aggregated.length) {
     list.innerHTML = '<div class="card">无法解密任何项目，请检查 Sync Secret 是否正确。</div>';
     msg.textContent = failed ? `有 ${failed} 个项目加载或解密失败` : '';
     return;
   }
+  // Save for export
+  state.cloudAggregatedItems = aggregated;
   // Render simple list of codes
   list.innerHTML = '';
   for (const item of aggregated.slice(0, 200)) { // cap to avoid extreme DOM
@@ -1870,6 +2103,229 @@ async function renderAllCloudCodes() {
     codeForItem(item).then(c => { right.textContent = formatCode(c, item.digits); }).catch(()=>{ right.textContent='ERR'; });
   }
   msg.textContent = failed ? `有 ${failed} 个项目加载或解密失败（其余已显示）` : '';
+}
+
+function buildOtpAuthUrl(item) {
+  const type = (item.type || 'totp').toLowerCase();
+  const issuer = item.issuer || '';
+  const account = item.account || '';
+  const label = issuer ? `${issuer}:${account}` : (account || '');
+  const params = new URLSearchParams();
+  params.set('secret', (item.secret || '').replace(/\s+/g,'').toUpperCase());
+  if (issuer) params.set('issuer', issuer);
+  if (item.algorithm) params.set('algorithm', (item.algorithm||'SHA1').toUpperCase());
+  if (item.digits) params.set('digits', String(item.digits));
+  if (type === 'totp') {
+    if (item.period) params.set('period', String(item.period));
+  } else if (type === 'hotp') {
+    params.set('counter', String(item.counter || 0));
+  }
+  return `otpauth://${type}/${encodeURIComponent(label)}?${params.toString()}`;
+}
+
+function exportAllCloudDecrypted() {
+  const items = Array.isArray(state.cloudAggregatedItems) ? state.cloudAggregatedItems : [];
+  if (!items.length) { alert('没有可导出的已解密项目，请先勾选“全部显示”并完成解密。'); return; }
+  const fmt = byId('cloud-export-format')?.value || 'otpauth';
+  const split = !!byId('cloud-export-split')?.checked;
+  const selectedOnly = !!byId('cloud-export-selected-only')?.checked;
+  const selected = state.cloudSelectedProjects && typeof state.cloudSelectedProjects.has === 'function' ? state.cloudSelectedProjects : new Set();
+  let valid = items.filter(it => !it.deleted);
+  if (selectedOnly) {
+    if (!selected.size) { alert('请先在“云端项目列表”勾选要导出的项目'); return; }
+    valid = valid.filter(it => selected.has(it._projectName));
+  }
+  const groups = split ? groupBy(valid, it => (it._projectName || 'unknown')) : { all: valid };
+  const ts = Date.now();
+  if (fmt === 'json') {
+    for (const [key, arr] of Object.entries(groups)) {
+      const payload = arr.map(it => ({
+        type: it.type || 'totp',
+        issuer: it.issuer || '',
+        account: it.account || '',
+        secret: (it.secret || '').replace(/\s+/g,'').toUpperCase(),
+        algorithm: (it.algorithm || 'SHA1').toUpperCase(),
+        digits: Number(it.digits || 6),
+        period: Number(it.period || 30),
+        counter: (it.type === 'hotp') ? Number(it.counter || 0) : undefined,
+        project: it._projectName || '',
+        otpauth: buildOtpAuthUrl(it)
+      }));
+      downloadBlob(`cloud-decrypted-${sanitizeFilePart(split?key:'all')}-${ts}.json`, new Blob([JSON.stringify({ items: payload }, null, 2)], { type: 'application/json' }));
+    }
+  } else {
+    if (fmt === 'otpauth') {
+      for (const [key, arr] of Object.entries(groups)) {
+        const lines = arr.map(buildOtpAuthUrl).join('\n') + '\n';
+        downloadBlob(`cloud-decrypted-otpauth-${sanitizeFilePart(split?key:'all')}-${ts}.txt`, new Blob([lines], { type: 'text/plain' }));
+      }
+    } else if (fmt === 'csv') {
+      const header = ['type','issuer','account','secret','algorithm','digits','period','counter','project','otpauth'];
+      for (const [key, arr] of Object.entries(groups)) {
+        const rows = [header.join(',')].concat(arr.map(it => {
+          const cols = [
+            it.type || 'totp',
+            it.issuer || '',
+            it.account || '',
+            (it.secret || '').replace(/\s+/g,'').toUpperCase(),
+            (it.algorithm || 'SHA1').toUpperCase(),
+            String(Number(it.digits || 6)),
+            String(Number(it.period || 30)),
+            it.type === 'hotp' ? String(Number(it.counter || 0)) : '',
+            it._projectName || '',
+            buildOtpAuthUrl(it)
+          ];
+          return cols.map(csvEscape).join(',');
+        }));
+        const blob = new Blob([rows.join('\n') + '\n'], { type: 'text/csv' });
+        downloadBlob(`cloud-decrypted-${sanitizeFilePart(split?key:'all')}-${ts}.csv`, blob);
+      }
+    }
+  }
+}
+
+function groupBy(arr, fn) {
+  const map = {};
+  for (const it of arr) {
+    const k = String(fn(it));
+    (map[k] ||= []).push(it);
+  }
+  return map;
+}
+
+function sanitizeFilePart(name) {
+  return String(name || 'part').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 64);
+}
+
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+}
+
+// ---------- Vault (key escrow) helpers ----------
+async function escrowSelectedProjects() {
+  const enabled = (byId('vault-enable')?.checked) || false;
+  const pub = (byId('vault-pubkey')?.value || '').trim();
+  if (!enabled || !pub) { alert('请先勾选启用并填写管理员公钥'); return; }
+  const token = getGlobalToken(); if (!token) { alert('请先设置 Server Token（标题三击）'); return; }
+  const secretRaw = (byId('cloud-browse-secret')?.value || '').trim();
+  const defaultSecrets = secretRaw.split(/\n|,/).map(s=>s.trim()).filter(Boolean);
+  if (!defaultSecrets.length) { alert('请在“默认 Sync Secret”输入密钥'); return; }
+  const selected = state.cloudSelectedProjects && state.cloudSelectedProjects.size ? Array.from(state.cloudSelectedProjects) : (state.cloudProjects||[]).map(p=>p.syncId);
+  if (!selected.length) { alert('没有选中的项目'); return; }
+  const pubKey = await importRsaPublicKey(pub);
+  let ok = 0, fail = 0;
+  for (const id of selected) {
+    try {
+      const cipher = await rsaEncryptSecret(pubKey, defaultSecrets[0], id);
+      await fetch(`/api/vault/${encodeURIComponent(id)}`, { method:'PUT', headers: { 'Content-Type': 'application/json', 'X-Token': token }, body: JSON.stringify(cipher) });
+      ok++;
+    } catch { fail++; }
+  }
+  toast(`托管完成：成功 ${ok}，失败 ${fail}`, ok && !fail ? 'ok' : (ok? 'warn':'err'));
+}
+
+async function recoverSelectedProjects() {
+  const enabled = (byId('vault-enable')?.checked) || false;
+  if (!enabled) { alert('请先勾选启用'); return; }
+  const token = getGlobalToken(); if (!token) { alert('请先设置 Server Token'); return; }
+  const pem = prompt('粘贴管理员私钥 (PKCS8 PEM)：'); if (!pem) return;
+  let priv; try { priv = await importRsaPrivateKey(pem); } catch { alert('私钥解析失败'); return; }
+  const selected = state.cloudSelectedProjects && state.cloudSelectedProjects.size ? Array.from(state.cloudSelectedProjects) : (state.cloudProjects||[]).map(p=>p.syncId);
+  if (!selected.length) { alert('没有选中的项目'); return; }
+  const recovered = [];
+  for (const id of selected) {
+    try {
+      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { headers: { 'X-Token': token, 'Cache-Control': 'no-store' } });
+      if (!res.ok) continue; const j = await res.json();
+      const sec = await rsaDecryptSecret(priv, j);
+      if (sec) recovered.push(`${id}: ${sec}`);
+    } catch {}
+  }
+  if (!recovered.length) { alert('没有找回任何密钥'); return; }
+  const blob = new Blob([recovered.join('\n')+'\n'], { type:'text/plain' });
+  downloadBlob(`recovered-secrets-${Date.now()}.txt`, blob);
+}
+
+async function importRsaPublicKey(pemOrB64) {
+  const b = decodePemOrB64(pemOrB64, 'PUBLIC KEY');
+  return crypto.subtle.importKey('spki', b, { name:'RSA-OAEP', hash:'SHA-256' }, false, ['encrypt']);
+}
+async function importRsaPrivateKey(pemOrB64) {
+  const b = decodePemOrB64(pemOrB64, 'PRIVATE KEY');
+  return crypto.subtle.importKey('pkcs8', b, { name:'RSA-OAEP', hash:'SHA-256' }, false, ['decrypt']);
+}
+function decodePemOrB64(str, label) {
+  let s = String(str||'').trim();
+  if (s.includes('BEGIN')) {
+    s = s.replace(/-----BEGIN [^-]+-----/g,'').replace(/-----END [^-]+-----/g,'').replace(/\s+/g,'');
+  }
+  const bin = atob(s);
+  const arr = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr.buffer;
+}
+async function rsaEncryptSecret(pubKey, secret, id) {
+  const aesKeyRaw = crypto.getRandomValues(new Uint8Array(32));
+  const aesKey = await crypto.subtle.importKey('raw', aesKeyRaw, { name:'AES-GCM' }, false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const pt = new TextEncoder().encode(JSON.stringify({ t:'sync-secret', id, v:1, secret: secret }));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, aesKey, pt));
+  const ek = new Uint8Array(await crypto.subtle.encrypt({ name:'RSA-OAEP' }, pubKey, aesKeyRaw));
+  return { v:1, algo:'RSA-OAEP+AES-GCM', ek: toB64(ek), iv: toB64(iv), ct: toB64(ct), id, ts: Date.now() };
+}
+async function rsaDecryptSecret(privKey, obj) {
+  try {
+    const aesKeyRaw = new Uint8Array(fromB64(obj.ek));
+    const raw = await crypto.subtle.decrypt({ name:'RSA-OAEP' }, privKey, aesKeyRaw);
+    const aesKey = await crypto.subtle.importKey('raw', raw, { name:'AES-GCM' }, false, ['decrypt']);
+    const iv = new Uint8Array(fromB64(obj.iv));
+    const ct = new Uint8Array(fromB64(obj.ct));
+    const pt = new Uint8Array(await crypto.subtle.decrypt({ name:'AES-GCM', iv }, aesKey, ct));
+    const j = JSON.parse(new TextDecoder().decode(pt));
+    return j && j.secret ? String(j.secret) : '';
+  } catch { return ''; }
+}
+
+// ---------- Batch key migration (selected projects) ----------
+async function migrateSelectedProjects() {
+  const token = getGlobalToken(); if (!token) { alert('请先设置 Server Token'); return; }
+  const selected = state.cloudSelectedProjects && state.cloudSelectedProjects.size ? Array.from(state.cloudSelectedProjects) : [];
+  if (!selected.length) { alert('请在云端项目列表勾选要迁移的项目'); return; }
+  const oldRaw = prompt('输入旧 Sync Secret（可多个，逗号或换行分隔）：'); if (!oldRaw) return;
+  const newSecret = prompt('输入新 Sync Secret：'); if (!newSecret) return;
+  const oldSecrets = oldRaw.split(/\n|,/).map(s=>s.trim()).filter(Boolean);
+  let ok=0, fail=0;
+  for (const id of selected) {
+    try {
+      const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
+      if (!res.ok) { fail++; continue; }
+      const payload = await res.json();
+      // Try old secrets to decrypt
+      let plain = null;
+      for (const sec of oldSecrets) {
+        try { const key = await deriveSyncKey(sec, id); plain = await syncDecrypt(payload, key); break; } catch {}
+      }
+      if (!plain) { fail++; continue; }
+      // Re-encrypt with new secret and push
+      const newKey = await deriveSyncKey(newSecret, id);
+      const newPayload = await syncEncrypt({ items: (plain.items || []).map(ensureItemDefaults) }, newKey);
+      const put = await fetch(getSyncEndpoint(id), { method:'PUT', headers: { 'Content-Type': 'application/json', 'X-Token': token }, body: JSON.stringify(newPayload) });
+      if (!put.ok) { fail++; continue; }
+      // Update local cached project config
+      const proj = (state.syncProjects || []).find(p => p.syncId === id);
+      if (proj) { proj.secret = newSecret; proj.lastSyncedAt = Date.now(); }
+      ok++;
+    } catch { fail++; }
+  }
+  saveSyncProjects();
+  renderSyncProjects();
+  toast(`迁移完成：成功 ${ok}，失败 ${fail}`, ok && !fail ? 'ok' : (ok? 'warn' : 'err'));
+}
+
+function csvEscape(v) {
+  const s = String(v ?? '');
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
 }
 
 // ---------- Merge (conflict resolution) ----------
@@ -1970,13 +2426,14 @@ async function shareItem(item, qs='') {
   const sid = b64url(sidBytes);
   const body = JSON.stringify({ v:1, iv: b64url(iv), ct: b64url(ct) });
   const headers = { 'Content-Type': 'application/json' };
-  if (state.sync?.token) headers['X-Token'] = state.sync.token;
+  const gtoken = getGlobalToken();
+  if (gtoken) headers['X-Token'] = gtoken;
   const res = await fetch(`/api/share/${encodeURIComponent(sid)}${qs}`, { method:'PUT', headers, body });
   if (!res.ok) { const err = new Error('server'); err.status = res.status; throw err; }
   // Store share key server-side (optional), requires Server Token
   try {
-    if (state.sync?.token) {
-      await fetch(`/api/sharekey/${encodeURIComponent(sid)}${qs}`, { method:'PUT', headers: { 'Content-Type':'application/json', 'X-Token': state.sync.token }, body: JSON.stringify({ k: b64url(keyRaw) }) });
+    if (gtoken) {
+      await fetch(`/api/sharekey/${encodeURIComponent(sid)}${qs}`, { method:'PUT', headers: { 'Content-Type':'application/json', 'X-Token': gtoken }, body: JSON.stringify({ k: b64url(keyRaw) }) });
     }
   } catch {}
   const link = `${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#k=${b64url(keyRaw)}`;
@@ -1986,6 +2443,63 @@ async function shareItem(item, qs='') {
   await persist();
   scheduleAutoPush();
   return link;
+}
+
+// Share for aggregated view: write back to source project and push to cloud
+async function shareItemForProject(item, qs='') {
+  const pid = item._projectId;
+  const proj = state.syncProjects.find(p => p.id === pid);
+  if (!proj) throw new Error('未找到源项目');
+  // Clone a minimal item to avoid mutating aggregated reference prematurely
+  const local = { ...item };
+  // Reuse sharing flow but with manual request using global token
+  if ((local.type || 'totp') !== 'totp') throw new Error('仅支持分享 TOTP');
+  const payloadObj = {
+    type: 'totp',
+    secret: (local.secret||'').replace(/\s+/g,'').toUpperCase(),
+    algorithm: (local.algorithm||'SHA1').toUpperCase(),
+    digits: Number(local.digits||6),
+    period: Number(local.period||30),
+    label: `${local.issuer||''}${local.account?(' · '+local.account):''}`.trim()
+  };
+  const pt = new TextEncoder().encode(JSON.stringify(payloadObj));
+  const keyRaw = crypto.getRandomValues(new Uint8Array(32));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await crypto.subtle.importKey('raw', keyRaw, { name:'AES-GCM' }, false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, pt));
+  const sidBytes = crypto.getRandomValues(new Uint8Array(12));
+  const sid = b64url(sidBytes);
+  const body = JSON.stringify({ v:1, iv: b64url(iv), ct: b64url(ct) });
+  const token = getGlobalToken();
+  const headers = { 'Content-Type': 'application/json', ...(token ? { 'X-Token': token } : {}) };
+  const res = await fetch(`/api/share/${encodeURIComponent(sid)}${qs}`, { method:'PUT', headers, body });
+  if (!res.ok) { const err = new Error('server'); err.status = res.status; throw err; }
+  try { if (token) { await fetch(`/api/sharekey/${encodeURIComponent(sid)}${qs}`, { method:'PUT', headers: { 'Content-Type': 'application/json', 'X-Token': token }, body: JSON.stringify({ k: b64url(keyRaw) }) }); } } catch {}
+  const link = `${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#k=${b64url(keyRaw)}`;
+  // Write back to source project
+  if (!Array.isArray(local.shares)) local.shares = [];
+  if (!local.shares.some((x)=> (typeof x==='string'? x===sid : x.sid===sid))) local.shares.push({ sid, k: b64url(keyRaw) });
+  local.updatedAt = Date.now();
+  // Update project itemsData
+  if (!Array.isArray(proj.itemsData)) proj.itemsData = [];
+  const idx = proj.itemsData.findIndex(x => x.id === local.id);
+  if (idx >= 0) proj.itemsData[idx] = { ...proj.itemsData[idx], shares: local.shares, updatedAt: local.updatedAt };
+  else proj.itemsData.push(local);
+  saveSyncProjects();
+  // Best effort push to cloud for that project
+  try { await pushProject(proj); } catch {}
+  return link;
+}
+
+async function pushProject(proj) {
+  const id = (proj && proj.syncId) || '';
+  const secret = (proj && proj.secret) || '';
+  if (!id || !secret) return;
+  const token = getGlobalToken();
+  const key = await deriveSyncKey(secret, id);
+  const payload = await syncEncrypt({ items: proj.itemsData || [] }, key);
+  const res = await fetch(getSyncEndpoint(id), { method:'PUT', headers: { 'Content-Type': 'application/json', ...(token?{ 'X-Token': token }: {}) }, body: JSON.stringify(payload) });
+  if (res.ok) { proj.lastSyncedAt = Date.now(); saveSyncProjects(); }
 }
 
 async function revokeShare() {
