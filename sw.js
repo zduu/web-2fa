@@ -1,4 +1,4 @@
-const CACHE = '2fa-cache-v2';
+const CACHE = '2fa-cache-v3';
 const ASSETS = [
   '/',
   '/index.html',

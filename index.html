@@ -10,7 +10,7 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>Web 2FA Authenticator</h1>
+      <h1 id="app-title">Web 2FA Authenticator</h1>
       <div class="actions">
         <button id="btn-add">添加账户</button>
         <button id="btn-scan">扫码导入</button>
@@ -19,63 +19,78 @@
         <button id="btn-sync">同步</button>
         <button id="btn-shares">分享管理</button>
         <button id="btn-password">密码/解锁</button>
-        <span id="sync-status" class="sync-status" title="同步状态">未同步</span>
       </div>
     </header>
 
     <main>
-      <section id="notice" class="notice">
-        <p>完全在浏览器本地运行。数据默认保存在本地（可选设置主密码加密）。兼容 otpauth 协议，可用于大多数网站的 Google/Microsoft Authenticator 设置二维码。</p>
-      </section>
 
       <section id="add-form" class="card hidden">
-        <h2>添加账户（粘贴 otpauth 链接或手动）</h2>
-        <textarea id="otpauth-input" placeholder="支持 otpauth://... 以及 otpauth-migration://offline?data=..."></textarea>
-        <div class="or">或</div>
-        <div class="grid">
-          <label>
-            类型
-            <select id="type">
-              <option value="totp">TOTP（基于时间）</option>
-              <option value="hotp">HOTP（基于计数器）</option>
-            </select>
+        <h2>添加账户</h2>
+
+        <!-- 主要输入区：Secret -->
+        <div class="form-section primary-section">
+          <label class="form-label-highlight">
+            <span class="label-text">密钥 Secret <span class="badge-required">必填</span></span>
+            <input id="secret" class="input-large" placeholder="粘贴密钥，例如：HKGZ HPK2 T7VV GP7Q 6CGG 6KKC UKLQ 4JAL" />
+            <span class="hint">Base32 格式，通常在二维码下方显示，可包含空格</span>
           </label>
-          <label>
-            Issuer/服务名
-            <input id="issuer" />
-          </label>
-          <label>
-            账号/标签
-            <input id="account" />
-          </label>
-          <label>
-            Secret (Base32，可含空格分组)
-            <input id="secret" placeholder="例如：HKGZ HPK2 T7VV GP7Q 6CGG 6KKC UKLQ 4JAL" />
-          </label>
-          <label>
-            算法
-            <select id="algorithm">
-              <option>SHA1</option>
-              <option>SHA256</option>
-              <option>SHA512</option>
-            </select>
-          </label>
-          <label>
-            位数
-            <select id="digits">
-              <option>6</option>
-              <option>8</option>
-            </select>
-          </label>
-          <label id="period-row">
-            周期 (s)
-            <input id="period" type="number" value="30" min="5" />
-          </label>
-          <label id="counter-row" class="hidden">
-            计数器（HOTP）
-            <input id="counter" type="number" value="0" min="0" />
-          </label>
+
+          <div class="grid grid-2">
+            <label>
+              服务名称
+              <input id="issuer" placeholder="如：Google、GitHub" />
+            </label>
+            <label>
+              账号/邮箱
+              <input id="account" placeholder="如：user@example.com" />
+            </label>
+          </div>
         </div>
+
+        <!-- 高级选项（折叠） -->
+        <details class="advanced-options">
+          <summary>高级选项</summary>
+          <div class="grid">
+            <label>
+              类型
+              <select id="type">
+                <option value="totp">TOTP（基于时间）</option>
+                <option value="hotp">HOTP（基于计数器）</option>
+              </select>
+            </label>
+            <label>
+              算法
+              <select id="algorithm">
+                <option>SHA1</option>
+                <option>SHA256</option>
+                <option>SHA512</option>
+              </select>
+            </label>
+            <label>
+              位数
+              <select id="digits">
+                <option>6</option>
+                <option>8</option>
+              </select>
+            </label>
+            <label id="period-row">
+              周期 (s)
+              <input id="period" type="number" value="30" min="5" />
+            </label>
+            <label id="counter-row" class="hidden">
+              计数器（HOTP）
+              <input id="counter" type="number" value="0" min="0" />
+            </label>
+          </div>
+        </details>
+
+        <!-- otpauth 链接支持（次要） -->
+        <details class="otpauth-section">
+          <summary>从链接导入</summary>
+          <textarea id="otpauth-input" placeholder="粘贴 otpauth://... 或 otpauth-migration://... 链接"></textarea>
+          <span class="hint">支持 Google Authenticator 迁移格式</span>
+        </details>
+
         <div class="buttons">
           <button id="add-confirm">添加</button>
           <button id="add-cancel" class="secondary">取消</button>
@@ -84,15 +99,29 @@
 
       <section id="scan-form" class="card hidden">
         <h2>扫码导入</h2>
-        <div id="scan-support" class="hint"></div>
+        <p class="hint">扫描二维码或从图片识别，自动填入所有信息</p>
+
+        <div class="scan-modes">
+          <button id="scan-start" class="scan-mode-btn active">
+            <span class="icon">📷</span>
+            <span>摄像头扫描</span>
+          </button>
+          <label for="file-input" class="scan-mode-btn">
+            <span class="icon">🖼️</span>
+            <span>选择图片</span>
+          </label>
+        </div>
+
+        <div id="scan-support" class="hint scan-hint"></div>
+
         <div class="scanner">
           <video id="video" playsinline></video>
           <canvas id="canvas" class="hidden"></canvas>
         </div>
+
         <div class="buttons">
-          <button id="scan-start">开始扫描</button>
-          <button id="scan-stop" class="secondary">停止</button>
-          <input type="file" id="file-input" accept="image/*" />
+          <input type="file" id="file-input" accept="image/*" class="hidden" />
+          <button id="scan-stop" class="secondary">停止扫描</button>
         </div>
       </section>
 
@@ -100,34 +129,85 @@
 
       <section id="sync-form" class="card hidden">
         <h2>多设备同步（Cloudflare Pages + KV）</h2>
-        <p class="hint">数据在本地端到端加密后同步到你的 Cloudflare KV。确保为 Pages Functions 绑定一个 KV（名称：AUTH_KV），并可选设置环境变量 SYNC_TOKEN。</p>
-        <div class="grid">
-          <label>
-            Sync ID（自定义，区分你的数据）
-            <input id="sync-id" placeholder="例如：my-user-id" />
-          </label>
-          <label>
-            Sync Secret（用于端到端加密）
-            <input id="sync-secret" placeholder="仅本地保存，跨设备需一致" />
-          </label>
-          <label>
-            Server Token（可选，若后端开启）
-            <input id="sync-token" placeholder="与后端 SYNC_TOKEN 相同" />
-          </label>
-          <label>
-            自动同步
-            <div class="row">
-              <input id="sync-auto" type="checkbox" />
-              <span class="hint">启用后：启动时尝试拉取；保存后自动推送；每 60 秒自动拉取。</span>
-            </div>
-          </label>
+        <p class="hint">数据在本地端到端加密后同步到你的 Cloudflare KV。可管理多个 Sync ID 项目，每个项目独立存储验证码。</p>
+
+        
+
+        <!-- Sync Projects List -->
+        <div class="card sub-card">
+          <div class="sync-project-header">
+            <h3>同步项目</h3>
+            <button id="sync-project-add" class="btn-small">+ 新建项目</button>
+          </div>
+          <div id="sync-projects-list" class="sync-projects-list"></div>
         </div>
+
+        <!-- Cloud Browse (Admin) -->
+        <div class="card sub-card">
+          <div class="sync-project-header">
+            <h3>🌐 云端浏览（管理员）</h3>
+            <button id="cloud-browse-btn" class="btn-small">浏览云端所有项目</button>
+          </div>
+          <p class="hint">输入 KV Admin Key 后可查看云端所有同步项目（包括其他用户）。<strong>数据仍是加密的，只有拥有对应 Sync Secret 才能解密</strong>。</p>
+        </div>
+
+        <!-- Current Project Config -->
+        <div id="sync-config-panel" class="hidden">
+          <h3>当前项目配置</h3>
+          <div class="grid">
+            <label>
+              项目名称
+              <input id="sync-project-name" placeholder="例如：个人账号" />
+            </label>
+            <label>
+              Sync ID（自定义，区分你的数据）
+              <input id="sync-id" placeholder="例如：my-user-id" />
+            </label>
+            <label>
+              Sync Secret（用于端到端加密）
+              <input id="sync-secret" type="password" placeholder="仅本地保存，跨设备需一致" />
+            </label>
+            <label>
+              自动同步
+              <div class="row">
+                <input id="sync-auto" type="checkbox" />
+                <span class="hint">启用后：启动时尝试拉取；保存后自动推送；每 60 秒自动拉取。</span>
+              </div>
+            </label>
+          </div>
+          <div class="buttons">
+            <button id="sync-save-project">保存项目</button>
+            <button id="sync-delete-project" class="secondary">删除项目</button>
+            <button id="sync-cancel-edit" class="secondary">取消</button>
+          </div>
+        </div>
+
+        <!-- Sync Operations -->
         <div class="buttons">
           <button id="sync-push">推送到云端</button>
           <button id="sync-pull" class="secondary">从云端拉取</button>
           <button id="sync-clean" class="secondary">清理已删除</button>
           <button id="share-revoke" class="secondary">撤销分享</button>
           <button id="sync-close" class="secondary">关闭</button>
+        </div>
+      </section>
+
+      <section id="shares-form" class="card hidden">
+        <h2>分享管理</h2>
+        <p class="hint">管理云端分享链接。请先设置全局 Server Token（点击标题 3 次）。</p>
+
+        <div class="card sub-card">
+          <h3>云端分享（KV）</h3>
+          <div class="buttons">
+            <button id="cloud-load">加载云端分享</button>
+            <button id="cloud-reload" class="secondary">刷新</button>
+          </div>
+          <p class="hint">云端列表仅包含 SID；若保存了密钥，可直接复制完整链接。</p>
+          <div id="cloud-shares-list" class="shares-list"></div>
+        </div>
+
+        <div class="buttons">
+          <button id="shares-close" class="secondary">关闭</button>
         </div>
       </section>
     </main>
@@ -189,6 +269,29 @@
       </div>
     </div>
 
+    <!-- Global Server Token Modal -->
+    <div id="global-token-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card">
+        <h3>全局 Server Token 设置</h3>
+        <p class="hint">此 Token 用于所有同步和分享操作，与后端 SYNC_TOKEN 保持一致。</p>
+        <label>
+          Server Token（可选）
+          <div class="token-input-wrapper">
+            <input id="global-token-input" type="password" placeholder="输入后自动保存" />
+            <button type="button" id="global-token-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
+            <span id="global-token-status" class="token-status"></span>
+          </div>
+          <span class="hint">留空表示后端未启用 Token 验证</span>
+        </label>
+        <div class="buttons">
+          <button id="global-token-save">保存</button>
+          <button id="global-token-clear" class="secondary">清除</button>
+          <button id="global-token-cancel" class="secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <!-- Global access gate modal (server-side ACCESS_GATE) -->
@@ -205,6 +308,74 @@
           <button id="gate-submit">进入</button>
         </div>
         <div id="gate-msg" class="hint"></div>
+      </div>
+    </div>
+
+    <!-- Password/Unlock Modal -->
+    <div id="password-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card">
+        <h3 id="password-modal-title">主密码管理</h3>
+        <p class="hint" id="password-modal-hint">数据将使用 AES-GCM 加密存储在本地浏览器中</p>
+        <label>
+          主密码
+          <div class="token-input-wrapper">
+            <input id="password-input" type="password" placeholder="请输入主密码" />
+            <button type="button" id="password-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
+          </div>
+          <span class="hint" id="password-hint">建议使用强密码，忘记密码将无法恢复数据</span>
+        </label>
+        <div class="buttons">
+          <button id="password-confirm">确认</button>
+          <button id="password-cancel" class="secondary">取消</button>
+        </div>
+        <div id="password-msg" class="hint" style="color: var(--danger); margin-top: 8px;"></div>
+      </div>
+    </div>
+
+    <!-- Cloud Browse Modal (Admin) -->
+    <div id="cloud-browse-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel card" style="max-width: 800px; width: 95vw;">
+        <h3>🌐 云端项目浏览</h3>
+        <p class="hint">输入 KV Admin Key 查看云端所有同步项目。数据已加密，需要对应的 Sync Secret 才能解密。</p>
+
+        <label>
+          KV Admin Key
+          <div class="token-input-wrapper">
+            <input id="kv-admin-key-input" type="password" placeholder="请输入 KV Admin Key" />
+            <button type="button" id="kv-admin-key-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
+          </div>
+          <span class="hint">此密钥在后端环境变量 KV_ADMIN_KEY 中配置</span>
+        </label>
+
+        <div class="buttons">
+          <button id="cloud-browse-load">加载云端项目</button>
+          <button id="cloud-browse-close" class="secondary">关闭</button>
+        </div>
+
+        <div id="cloud-browse-result" class="hidden" style="margin-top: 20px;">
+          <h4>云端项目列表（共 <span id="cloud-total">0</span> 个）</h4>
+          <div id="cloud-projects-list" class="cloud-projects-list"></div>
+          <label class="row" style="margin-top: 12px; align-items:center; gap:8px;">
+            <input type="checkbox" id="cloud-browse-show-all" />
+            <span>全部显示（尝试显示所有云端项目里的验证码）</span>
+          </label>
+          <label>
+            默认 Sync Secret（用于解密）
+            <div class="token-input-wrapper">
+              <input id="cloud-browse-secret" type="password" placeholder="用于解密所有项目，若不同项目密钥不同将无法解密" />
+              <button type="button" id="cloud-browse-secret-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
+            </div>
+          </label>
+          <div id="cloud-allcodes" class="hidden" style="margin-top: 12px;">
+            <h4>全部云端验证码</h4>
+            <div id="cloud-allcodes-list" class="list"></div>
+            <div id="cloud-allcodes-msg" class="hint" style="margin-top: 8px;"></div>
+          </div>
+        </div>
+
+        <div id="cloud-browse-msg" class="hint" style="color: var(--danger); margin-top: 8px;"></div>
       </div>
     </div>
 

@@ -8,6 +8,9 @@ export async function onRequest(context) {
   const needToken = !!env.SYNC_TOKEN;
 
   if (request.method === 'GET') {
+    if (needToken && tokenHeader !== env.SYNC_TOKEN) {
+      return new Response('Unauthorized', { status: 401 });
+    }
     const value = await env.AUTH_KV.get(key);
     if (!value) return new Response('Not found', { status: 404 });
     return new Response(value, { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -29,4 +32,3 @@ export async function onRequest(context) {
 
   return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, PUT, POST' } });
 }
-

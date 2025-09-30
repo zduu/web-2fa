@@ -12,3 +12,12 @@ kv_namespaces = [
 # 可选：与客户端填写的 Server Token 一致
 SYNC_TOKEN = "change-me"
 
+# 可选：全站访问口令
+# ACCESS_GATE = "your-site-password"
+
+# 可选：分享默认有效期（秒），≤0 表示永久
+# SHARE_TTL = "86400"
+
+# 可选：云端浏览管理员密钥（用于查看所有同步项目）
+# KV_ADMIN_KEY = "your-admin-key"
+

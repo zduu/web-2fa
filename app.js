@@ -7,7 +7,11 @@ const state = {
   encMeta: null, // {saltB64} when encrypted
   key: null, // CryptoKey for AES-GCM
   sync: { id: "", secret: "", token: "", auto: false, lastSyncedAt: 0 },
+  syncProjects: [], // [{id, name, syncId, secret, token, auto, lastSyncedAt, itemsData}]
+  currentProjectId: null,
+  globalToken: "",
   gateRequired: false,
+  cloudProjects: [],
 };
 
 // ---------- Utils ----------
@@ -41,6 +45,11 @@ async function copyTextToClipboard(text) {
       return false;
     }
   }
+}
+
+// Backward-compatible alias used by some handlers
+async function copyText(text) {
+  return copyTextToClipboard(String(text));
 }
 
 function base32Decode(input) {
@@ -290,13 +299,70 @@ async function deriveKey(password, salt) {
 }
 
 async function setPassword() {
-  const pwd = prompt("设置/输入主密码 (留空取消)：");
-  if (!pwd) return;
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  state.key = await deriveKey(pwd, salt);
-  state.encMeta = { saltB64: toB64(salt) };
-  await persist();
-  toast("主密码已设置并加密", 'ok');
+  return new Promise((resolve) => {
+    const modal = byId("password-modal");
+    const titleEl = byId("password-modal-title");
+    const hintEl = byId("password-modal-hint");
+    const input = byId("password-input");
+    const msgEl = byId("password-msg");
+
+    titleEl.textContent = "设置主密码";
+    hintEl.textContent = "数据将使用 AES-GCM 加密存储在本地浏览器中";
+    input.value = "";
+    msgEl.textContent = "";
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    input.focus();
+
+    const onConfirm = async () => {
+      const pwd = input.value.trim();
+      if (!pwd) {
+        msgEl.textContent = "请输入密码";
+        return;
+      }
+
+      try {
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        state.key = await deriveKey(pwd, salt);
+        state.encMeta = { saltB64: toB64(salt) };
+        await persist();
+        cleanup();
+        toast("主密码已设置并加密", 'ok');
+        resolve(true);
+      } catch (e) {
+        msgEl.textContent = "设置失败：" + e.message;
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    const onBackdrop = (e) => {
+      if (e.target === modal) onCancel();
+    };
+
+    const onKeydown = (e) => {
+      if (e.key === 'Enter') onConfirm();
+      if (e.key === 'Escape') onCancel();
+    };
+
+    const cleanup = () => {
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+      byId("password-confirm").removeEventListener("click", onConfirm);
+      byId("password-cancel").removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onBackdrop);
+      input.removeEventListener("keydown", onKeydown);
+    };
+
+    byId("password-confirm").addEventListener("click", onConfirm);
+    byId("password-cancel").addEventListener("click", onCancel);
+    modal.addEventListener("click", onBackdrop);
+    input.addEventListener("keydown", onKeydown);
+  });
 }
 
 async function unlock() {
@@ -304,37 +370,92 @@ async function unlock() {
   const data = localStorage.getItem(LS_KEY);
   if (!metaStr || !data) { state.unlocked = true; return; }
   const meta = JSON.parse(metaStr);
-  const pwd = prompt("输入主密码以解锁：");
-  if (!pwd) return;
-  const salt = fromB64(meta.saltB64);
-  state.key = await deriveKey(pwd, salt);
-  state.encMeta = meta;
-  try {
-    let txt;
-    try {
-      const parsed = JSON.parse(data);
-      const iv = fromB64(parsed.iv);
-      const ct = fromB64(parsed.ct);
-      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, ct);
-      txt = new TextDecoder().decode(new Uint8Array(plain));
-    } catch (_) {
-      // 兼容旧版格式：LS_META 中包含 ivB64，LS_KEY 仅密文（base64）
-      const iv = fromB64(meta.ivB64 || "");
-      if (!iv.length) throw new Error('no-iv');
-      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, fromB64(data));
-      txt = new TextDecoder().decode(new Uint8Array(plain));
-    }
-    const text = txt;
-    const parsed = JSON.parse(text);
-    state.items = (parsed.items || []).map(ensureItemDefaults);
-    state.unlocked = true;
-    render();
-    toast('已解锁', 'ok');
-  } catch (e) {
-    console.error(e);
-    alert("解锁失败，密码错误或数据损坏。");
-    toast('解锁失败', 'err');
-  }
+
+  return new Promise((resolve) => {
+    const modal = byId("password-modal");
+    const titleEl = byId("password-modal-title");
+    const hintEl = byId("password-modal-hint");
+    const input = byId("password-input");
+    const msgEl = byId("password-msg");
+
+    titleEl.textContent = "解锁数据";
+    hintEl.textContent = "检测到加密数据，请输入主密码以解锁";
+    input.value = "";
+    msgEl.textContent = "";
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    input.focus();
+
+    const onConfirm = async () => {
+      const pwd = input.value.trim();
+      if (!pwd) {
+        msgEl.textContent = "请输入密码";
+        return;
+      }
+
+      try {
+        const salt = fromB64(meta.saltB64);
+        state.key = await deriveKey(pwd, salt);
+        state.encMeta = meta;
+
+        let txt;
+        try {
+          const parsed = JSON.parse(data);
+          const iv = fromB64(parsed.iv);
+          const ct = fromB64(parsed.ct);
+          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, ct);
+          txt = new TextDecoder().decode(new Uint8Array(plain));
+        } catch (_) {
+          // 兼容旧版格式
+          const iv = fromB64(meta.ivB64 || "");
+          if (!iv.length) throw new Error('no-iv');
+          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, fromB64(data));
+          txt = new TextDecoder().decode(new Uint8Array(plain));
+        }
+
+        const parsed = JSON.parse(txt);
+        state.items = (parsed.items || []).map(ensureItemDefaults);
+        state.unlocked = true;
+        cleanup();
+        render();
+        toast('已解锁', 'ok');
+        resolve(true);
+      } catch (e) {
+        console.error(e);
+        msgEl.textContent = "解锁失败，密码错误或数据损坏";
+        resolve(false);
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    const onBackdrop = (e) => {
+      if (e.target === modal) onCancel();
+    };
+
+    const onKeydown = (e) => {
+      if (e.key === 'Enter') onConfirm();
+      if (e.key === 'Escape') onCancel();
+    };
+
+    const cleanup = () => {
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+      byId("password-confirm").removeEventListener("click", onConfirm);
+      byId("password-cancel").removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onBackdrop);
+      input.removeEventListener("keydown", onKeydown);
+    };
+
+    byId("password-confirm").addEventListener("click", onConfirm);
+    byId("password-cancel").addEventListener("click", onCancel);
+    modal.addEventListener("click", onBackdrop);
+    input.addEventListener("keydown", onKeydown);
+  });
 }
 
 async function persist() {
@@ -439,6 +560,59 @@ function ensureItemDefaults(it) {
 }
 
 // ---------- UI ----------
+function updateStatusIndicators() {
+  // Storage status
+  const storageEl = byId('storage-status');
+  if (storageEl) {
+    const hasProject = state.syncProjects && state.syncProjects.length > 0;
+    if (hasProject) {
+      storageEl.textContent = '本地 + 云端同步';
+      storageEl.classList.add('active');
+      storageEl.classList.remove('warning');
+    } else {
+      storageEl.textContent = '仅本地';
+      storageEl.classList.remove('active');
+      storageEl.classList.add('warning');
+    }
+  }
+
+  // Token status
+  const tokenEl = byId('token-status-display');
+  if (tokenEl) {
+    const hasToken = !!(state.globalToken || loadGlobalToken());
+    if (hasToken) {
+      tokenEl.textContent = '已设置';
+      tokenEl.classList.add('active');
+      tokenEl.classList.remove('warning');
+    } else {
+      tokenEl.textContent = '未设置（三击标题设置）';
+      tokenEl.classList.remove('active');
+      tokenEl.classList.add('warning');
+    }
+  }
+
+  // Project status
+  const projectEl = byId('project-status');
+  if (projectEl) {
+    if (!state.currentProjectId) {
+      projectEl.textContent = '无项目（点击"同步"创建）';
+      projectEl.classList.remove('active');
+      projectEl.classList.add('warning');
+    } else if (state.currentProjectId === '_all_') {
+      projectEl.textContent = '📊 全部项目（汇总视图）';
+      projectEl.classList.add('active');
+      projectEl.classList.remove('warning');
+    } else {
+      const project = getCurrentProject();
+      if (project) {
+        projectEl.textContent = project.name || '未命名项目';
+        projectEl.classList.add('active');
+        projectEl.classList.remove('warning');
+      }
+    }
+  }
+}
+
 function toggleAddForm(show) {
   byId("add-form").classList.toggle("hidden", !show);
   if (show) {
@@ -448,6 +622,13 @@ function toggleAddForm(show) {
 
 function toggleScanForm(show) {
   byId("scan-form").classList.toggle("hidden", !show);
+}
+
+function hideAllForms() {
+  byId("add-form").classList.add("hidden");
+  byId("scan-form").classList.add("hidden");
+  byId("sync-form").classList.add("hidden");
+  byId("shares-form").classList.add("hidden");
 }
 
 function clearAddInputs() {
@@ -609,15 +790,36 @@ function render() {
   if (!state.unlocked) {
     const div = document.createElement("div");
     div.className = "card";
-    div.textContent = "已检测到加密数据。点击右上角‘密码/解锁’按钮输入主密码以解锁。";
+    div.textContent = "已检测到加密数据。点击右上角'密码/解锁'按钮输入主密码以解锁。";
     list.appendChild(div);
     return;
   }
+
+  // Update status indicators
+  updateStatusIndicators();
+
+  // Show project tag for items in "all" view
+  const isAllView = state.currentProjectId === '_all_';
+
   const tpl = byId("tpl-item");
   const items = state.items.filter(x => !x.deleted).sort((a,b) => `${a.issuer}\u0000${a.account}`.localeCompare(`${b.issuer}\u0000${b.account}`));
   for (const item of items) {
     const node = tpl.content.firstElementChild.cloneNode(true);
     node.dataset.id = item.id;
+
+    // Add project badge in "all" view
+    if (isAllView && item._projectName) {
+      const meta = node.querySelector('.meta');
+      if (meta) {
+        const projectBadge = document.createElement('span');
+        projectBadge.className = 'badge project-tag';
+        projectBadge.textContent = item._projectName;
+        projectBadge.style.fontSize = '10px';
+        projectBadge.style.marginLeft = '8px';
+        meta.appendChild(projectBadge);
+      }
+    }
+
     renderItem(node, item);
     node.querySelector(".copy").addEventListener("click", async () => {
       try {
@@ -645,7 +847,13 @@ function render() {
         console.error(e); toast(`分享失败${e.status?('：'+e.status):''}`, 'err');
       }
     });
-    node.querySelector(".remove").addEventListener("click", () => removeItem(item.id));
+    node.querySelector(".remove").addEventListener("click", () => {
+      if (isAllView) {
+        toast('汇总视图不可删除，请切换到具体项目', 'warn');
+        return;
+      }
+      removeItem(item.id);
+    });
     list.appendChild(node);
   }
 }
@@ -753,18 +961,222 @@ async function scanImageFile(file) {
 
 function fileToBlob(file) { return file.slice(0, file.size, file.type || "image/*"); }
 
+// ---------- Cloud Browse (Admin) ----------
+async function loadCloudProjects() {
+  const adminKey = byId("kv-admin-key-input").value.trim();
+  const msgEl = byId("cloud-browse-msg");
+  const resultEl = byId("cloud-browse-result");
+  const listEl = byId("cloud-projects-list");
+  const totalEl = byId("cloud-total");
+
+  msgEl.textContent = "";
+  resultEl.classList.add("hidden");
+
+  if (!adminKey) {
+    msgEl.textContent = "请输入 KV Admin Key";
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/admin/list-all", {
+      method: "POST",
+      headers: {
+        "X-KV-Admin-Key": adminKey,
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (res.status === 401) {
+      msgEl.textContent = "KV Admin Key 无效";
+      return;
+    }
+
+    if (res.status === 500) {
+      msgEl.textContent = "服务器未配置 Admin Key 或发生错误";
+      return;
+    }
+
+    if (!res.ok) {
+      msgEl.textContent = `加载失败：${res.status}`;
+      return;
+    }
+
+    const data = await res.json();
+    if (!data.success) {
+      msgEl.textContent = data.error || "加载失败";
+      return;
+    }
+
+    // Display results
+    totalEl.textContent = String(data.total || 0);
+    listEl.innerHTML = "";
+
+    state.cloudProjects = Array.isArray(data.projects) ? data.projects : [];
+    if (!state.cloudProjects || state.cloudProjects.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center; color:var(--muted); padding:20px;">云端暂无同步项目</div>';
+    } else {
+      for (const proj of state.cloudProjects) {
+        const item = document.createElement("div");
+        item.className = "cloud-project-item";
+
+        const header = document.createElement("div");
+        header.className = "cloud-project-header";
+
+        const idEl = document.createElement("div");
+        idEl.className = "cloud-project-id";
+        idEl.textContent = proj.syncId || "未知";
+
+        const actionsEl = document.createElement("div");
+        actionsEl.className = "cloud-project-actions";
+
+        const importBtn = document.createElement("button");
+        importBtn.className = "btn-small secondary";
+        importBtn.textContent = "导入为新项目";
+        importBtn.addEventListener("click", () => {
+          importCloudProject(proj.syncId);
+        });
+
+        actionsEl.appendChild(importBtn);
+        header.appendChild(idEl);
+        header.appendChild(actionsEl);
+
+        const metaEl = document.createElement("div");
+        metaEl.className = "cloud-project-meta";
+        metaEl.textContent = `版本: v${proj.metadata?.version || 1} | 加密: ${proj.metadata?.hasData ? '是' : '否'}`;
+
+        item.appendChild(header);
+        item.appendChild(metaEl);
+        listEl.appendChild(item);
+      }
+    }
+
+    resultEl.classList.remove("hidden");
+    toast("云端项目加载成功", "ok");
+    // Auto render all codes if opted in
+    const showAll = byId('cloud-browse-show-all');
+    if (showAll && showAll.checked) {
+      renderAllCloudCodes();
+    } else {
+      const block = byId('cloud-allcodes'); if (block) block.classList.add('hidden');
+    }
+  } catch (e) {
+    console.error(e);
+    msgEl.textContent = "网络错误，请重试";
+  }
+}
+
+function importCloudProject(syncId) {
+  if (!syncId) return;
+
+  // Check if project already exists
+  const exists = state.syncProjects.some(p => p.syncId === syncId);
+  if (exists) {
+    toast("项目已存在", "warn");
+    return;
+  }
+
+  // Auto-fill sync ID and open new project form
+  byId("sync-project-name").value = `云端项目-${syncId}`;
+  byId("sync-id").value = syncId;
+  byId("sync-secret").value = "";
+  byId("sync-auto").checked = false;
+
+  byId("sync-config-panel").classList.remove("hidden");
+  byId("sync-config-panel").dataset.editingProjectId = "";
+
+  // Close cloud browse modal
+  const modal = byId("cloud-browse-modal");
+  if (modal) {
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+  }
+
+  toast("请输入 Sync Secret 以解密云端数据", "ok");
+}
+
 // ---------- Events ----------
 function bindEvents() {
-  byId("btn-add").addEventListener("click", () => { toggleAddForm(true); toggleScanForm(false); });
-  byId("btn-scan").addEventListener("click", () => { toggleScanForm(true); toggleAddForm(false); });
+  byId("btn-add").addEventListener("click", () => { hideAllForms(); toggleAddForm(true); });
+  byId("btn-scan").addEventListener("click", () => { hideAllForms(); toggleScanForm(true); });
   byId("btn-import").addEventListener("click", importData);
   byId("btn-export").addEventListener("click", () => { exportData(); toast('已触发下载'); });
-  byId("btn-sync").addEventListener("click", () => { byId("sync-form").classList.remove("hidden"); });
-  byId("btn-shares").addEventListener("click", () => { window.open('/shares.html', '_blank'); });
+  byId("btn-sync").addEventListener("click", () => {
+    hideAllForms();
+    byId("sync-form").classList.remove("hidden");
+    loadSyncProjects();
+    renderSyncProjects();
+  });
+  byId("btn-shares").addEventListener("click", () => {
+    hideAllForms();
+    byId("shares-form").classList.remove("hidden");
+  });
   byId("btn-password").addEventListener("click", async () => {
-    if (!state.unlocked) { await unlock(); return; }
-    const choice = confirm("确定要设置/重置主密码并加密本地数据？(取消仅解锁/保持现状)");
-    if (choice) await setPassword();
+    if (!state.unlocked) {
+      await unlock();
+      return;
+    }
+
+    // Show confirmation modal for setting password
+    const modal = byId("password-modal");
+    const titleEl = byId("password-modal-title");
+    const hintEl = byId("password-modal-hint");
+    const input = byId("password-input");
+    const msgEl = byId("password-msg");
+
+    titleEl.textContent = "设置/重置主密码";
+    hintEl.textContent = "确定要设置/重置主密码并加密本地数据？";
+    input.value = "";
+    msgEl.textContent = "";
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    input.focus();
+
+    const onConfirm = async () => {
+      const pwd = input.value.trim();
+      if (!pwd) {
+        msgEl.textContent = "请输入密码";
+        return;
+      }
+
+      try {
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        state.key = await deriveKey(pwd, salt);
+        state.encMeta = { saltB64: toB64(salt) };
+        await persist();
+        cleanup();
+        toast("主密码已设置并加密", 'ok');
+      } catch (e) {
+        msgEl.textContent = "设置失败：" + e.message;
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+    };
+
+    const onBackdrop = (e) => {
+      if (e.target === modal) onCancel();
+    };
+
+    const onKeydown = (e) => {
+      if (e.key === 'Enter') onConfirm();
+      if (e.key === 'Escape') onCancel();
+    };
+
+    const cleanup = () => {
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+      byId("password-confirm").removeEventListener("click", onConfirm);
+      byId("password-cancel").removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onBackdrop);
+      input.removeEventListener("keydown", onKeydown);
+    };
+
+    byId("password-confirm").addEventListener("click", onConfirm);
+    byId("password-cancel").addEventListener("click", onCancel);
+    modal.addEventListener("click", onBackdrop);
+    input.addEventListener("keydown", onKeydown);
   });
 
   byId("add-confirm").addEventListener("click", addItemFromFields);
@@ -779,7 +1191,10 @@ function bindEvents() {
   byId("file-input").addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) scanImageFile(f); });
 
   // Sync
-  byId("sync-close").addEventListener("click", () => byId("sync-form").classList.add("hidden"));
+  byId("sync-close").addEventListener("click", () => {
+    saveCurrentProjectItems();
+    byId("sync-form").classList.add("hidden");
+  });
   byId("sync-push").addEventListener("click", syncPush);
   byId("sync-pull").addEventListener("click", syncPull);
   byId("sync-clean").addEventListener("click", syncClean);
@@ -789,6 +1204,173 @@ function bindEvents() {
     state.sync.auto = autoEl.checked; saveSyncConfig();
     if (state.sync.auto) startAutoSync(); else stopAutoSync();
   });
+
+  // Sync Projects
+  const syncProjectAdd = byId("sync-project-add");
+  if (syncProjectAdd) syncProjectAdd.addEventListener("click", createNewProject);
+
+  const syncSaveProject = byId("sync-save-project");
+  if (syncSaveProject) syncSaveProject.addEventListener("click", saveProjectConfig);
+
+  const syncDeleteProject = byId("sync-delete-project");
+  if (syncDeleteProject) syncDeleteProject.addEventListener("click", deleteCurrentEditingProject);
+
+  const syncCancelEdit = byId("sync-cancel-edit");
+  if (syncCancelEdit) syncCancelEdit.addEventListener("click", () => {
+    byId("sync-config-panel").classList.add("hidden");
+  });
+
+  // Global Token - Triple click on title
+  let titleClickCount = 0;
+  let titleClickTimer = null;
+  const appTitle = byId("app-title");
+  if (appTitle) {
+    appTitle.addEventListener("click", () => {
+      titleClickCount++;
+      if (titleClickTimer) clearTimeout(titleClickTimer);
+
+      if (titleClickCount === 3) {
+        openGlobalTokenModal();
+        titleClickCount = 0;
+      } else {
+        titleClickTimer = setTimeout(() => {
+          titleClickCount = 0;
+        }, 500);
+      }
+    });
+  }
+
+  // Global Token Modal
+  const globalTokenSave = byId("global-token-save");
+  if (globalTokenSave) {
+    globalTokenSave.addEventListener("click", () => {
+      const token = byId("global-token-input").value;
+      saveGlobalToken(token);
+      state.globalToken = token;
+      byId("global-token-modal").classList.add("hidden");
+      toast(token ? 'Global Server Token 已保存' : 'Global Server Token 已清除', 'ok');
+    });
+  }
+
+  const globalTokenClear = byId("global-token-clear");
+  if (globalTokenClear) {
+    globalTokenClear.addEventListener("click", () => {
+      byId("global-token-input").value = "";
+      byId("global-token-status").textContent = "";
+    });
+  }
+
+  const globalTokenCancel = byId("global-token-cancel");
+  if (globalTokenCancel) {
+    globalTokenCancel.addEventListener("click", () => {
+      byId("global-token-modal").classList.add("hidden");
+    });
+  }
+
+  const globalTokenToggle = byId("global-token-toggle");
+  const globalTokenInput = byId("global-token-input");
+  const globalTokenStatus = byId("global-token-status");
+  if (globalTokenToggle && globalTokenInput) {
+    globalTokenToggle.addEventListener("click", () => {
+      const isPassword = globalTokenInput.type === "password";
+      globalTokenInput.type = isPassword ? "text" : "password";
+      globalTokenToggle.textContent = isPassword ? "🙈" : "👁️";
+    });
+    globalTokenInput.addEventListener("input", () => {
+      if (globalTokenInput.value) {
+        globalTokenStatus.textContent = "已设置";
+      } else {
+        globalTokenStatus.textContent = "";
+      }
+    });
+  }
+
+  // Password toggle for password modal
+  const passwordToggle = byId("password-toggle");
+  const passwordInput = byId("password-input");
+  if (passwordToggle && passwordInput) {
+    passwordToggle.addEventListener("click", () => {
+      const isPassword = passwordInput.type === "password";
+      passwordInput.type = isPassword ? "text" : "password";
+      passwordToggle.textContent = isPassword ? "🙈" : "👁️";
+    });
+  }
+
+  // Cloud Browse (Admin)
+  const cloudBrowseBtn = byId("cloud-browse-btn");
+  if (cloudBrowseBtn) {
+    cloudBrowseBtn.addEventListener("click", () => {
+      const modal = byId("cloud-browse-modal");
+      if (modal) {
+        modal.classList.remove("hidden");
+        modal.setAttribute("aria-hidden", "false");
+      }
+    });
+  }
+
+  const cloudBrowseClose = byId("cloud-browse-close");
+  if (cloudBrowseClose) {
+    cloudBrowseClose.addEventListener("click", () => {
+      const modal = byId("cloud-browse-modal");
+      if (modal) {
+        modal.classList.add("hidden");
+        modal.setAttribute("aria-hidden", "true");
+      }
+    });
+  }
+
+  const kvAdminKeyToggle = byId("kv-admin-key-toggle");
+  const kvAdminKeyInput = byId("kv-admin-key-input");
+  if (kvAdminKeyToggle && kvAdminKeyInput) {
+    kvAdminKeyToggle.addEventListener("click", () => {
+      const isPassword = kvAdminKeyInput.type === "password";
+      kvAdminKeyInput.type = isPassword ? "text" : "password";
+      kvAdminKeyToggle.textContent = isPassword ? "🙈" : "👁️";
+    });
+  }
+
+  const cloudBrowseLoad = byId("cloud-browse-load");
+  if (cloudBrowseLoad) {
+    cloudBrowseLoad.addEventListener("click", loadCloudProjects);
+  }
+
+  // Cloud browse: show-all toggle + secret reveal
+  const cloudShowAll = byId('cloud-browse-show-all');
+  const cloudSecret = byId('cloud-browse-secret');
+  const cloudSecretToggle = byId('cloud-browse-secret-toggle');
+  if (cloudShowAll) cloudShowAll.addEventListener('change', () => { if (cloudShowAll.checked) renderAllCloudCodes(); else { const b=byId('cloud-allcodes'); if (b) b.classList.add('hidden'); } });
+  if (cloudSecret) cloudSecret.addEventListener('change', () => { if (cloudShowAll && cloudShowAll.checked) renderAllCloudCodes(); });
+  if (cloudSecretToggle && cloudSecret) cloudSecretToggle.addEventListener('click', () => { const isPwd = cloudSecret.type === 'password'; cloudSecret.type = isPwd ? 'text' : 'password'; cloudSecretToggle.textContent = isPwd ? '🙈' : '👁️'; });
+
+  // Shares
+  const sharesClose = byId("shares-close");
+  if (sharesClose) sharesClose.addEventListener("click", () => byId("shares-form").classList.add("hidden"));
+
+  // Cloud Shares (list + refresh)
+  const cloudLoadBtn = byId('cloud-load');
+  const cloudReloadBtn = byId('cloud-reload');
+  if (cloudLoadBtn) cloudLoadBtn.addEventListener('click', loadCloudShares);
+  if (cloudReloadBtn) cloudReloadBtn.addEventListener('click', loadCloudShares);
+
+  // Token toggle
+  const tokenToggle = byId('token-toggle');
+  const tokenInput = byId('sync-token');
+  const tokenStatus = byId('token-status');
+  if (tokenToggle && tokenInput) {
+    tokenToggle.addEventListener('click', () => {
+      const isPassword = tokenInput.type === 'password';
+      tokenInput.type = isPassword ? 'text' : 'password';
+      tokenToggle.textContent = isPassword ? '🙈' : '👁️';
+    });
+    // Update status on input
+    tokenInput.addEventListener('input', () => {
+      if (tokenInput.value) {
+        tokenStatus.textContent = '已设置';
+      } else {
+        tokenStatus.textContent = '';
+      }
+    });
+  }
 }
 
 // ---------- Init ----------
@@ -798,10 +1380,15 @@ function startTicker() {
 }
 
 function init() {
+  loadSyncProjects();
   load();
   bindEvents();
   render();
   startTicker();
+  // Load global token
+  state.globalToken = loadGlobalToken();
+  // Update status indicators on init
+  updateStatusIndicators();
   // Register SW
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -819,11 +1406,272 @@ init();
 
 // ---------- Sync (E2E) ----------
 const LS_SYNC = "authenticator.v1.sync";
+const LS_SYNC_PROJECTS = "authenticator.v1.syncProjects";
+const LS_GLOBAL_TOKEN = "authenticator.v1.globalToken";
+
+// Global Server Token Management
+function loadGlobalToken() {
+  try {
+    return localStorage.getItem(LS_GLOBAL_TOKEN) || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveGlobalToken(token) {
+  if (token) {
+    localStorage.setItem(LS_GLOBAL_TOKEN, token);
+  } else {
+    localStorage.removeItem(LS_GLOBAL_TOKEN);
+  }
+  updateStatusIndicators();
+}
+
+function getGlobalToken() {
+  return state.globalToken || loadGlobalToken();
+}
+
+function openGlobalTokenModal() {
+  const modal = byId("global-token-modal");
+  const input = byId("global-token-input");
+  const status = byId("global-token-status");
+
+  input.value = loadGlobalToken();
+  if (input.value) {
+    status.textContent = "已设置";
+  } else {
+    status.textContent = "";
+  }
+
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+}
+
+// Sync Projects Management
+function loadSyncProjects() {
+  try {
+    const projects = JSON.parse(localStorage.getItem(LS_SYNC_PROJECTS) || "[]");
+    state.syncProjects = projects;
+    state.currentProjectId = localStorage.getItem("authenticator.v1.currentProjectId") || null;
+  } catch {
+    state.syncProjects = [];
+    state.currentProjectId = null;
+  }
+}
+
+function saveSyncProjects() {
+  localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(state.syncProjects));
+  if (state.currentProjectId) {
+    localStorage.setItem("authenticator.v1.currentProjectId", state.currentProjectId);
+  }
+  updateStatusIndicators();
+}
+
+function getCurrentProject() {
+  if (!state.currentProjectId) return null;
+  return state.syncProjects.find(p => p.id === state.currentProjectId) || null;
+}
+
+function renderSyncProjects() {
+  const list = byId("sync-projects-list");
+  if (!list) return;
+
+  // Create virtual "All Projects" entry
+  const allProjectsEntry = {
+    id: '_all_',
+    name: '全部项目（汇总视图）',
+    syncId: '-',
+    isVirtual: true
+  };
+
+  const allProjects = [allProjectsEntry, ...state.syncProjects];
+
+  if (state.syncProjects.length === 0) {
+    list.innerHTML = '';
+    return;
+  }
+
+  list.innerHTML = allProjects.map(project => {
+    const isActive = project.id === state.currentProjectId;
+    const isVirtual = project.isVirtual;
+
+    return `
+    <div class="sync-project-item ${isActive ? 'active' : ''} ${isVirtual ? 'virtual-project' : ''}" data-project-id="${project.id}">
+      <div class="project-info">
+        <div class="project-name">${isVirtual ? '📊 ' : ''}${escapeHtml(project.name || '未命名项目')}</div>
+        <div class="project-id">${isVirtual ? '只读视图，显示所有项目的验证码' : 'ID: ' + escapeHtml(project.syncId || '-')}</div>
+      </div>
+      ${isActive ? '<span class="project-badge">当前</span>' : ''}
+      ${!isVirtual ? `
+      <div class="project-actions">
+        <button class="btn-icon project-edit" data-project-id="${project.id}" title="编辑">✏️</button>
+      </div>
+      ` : ''}
+    </div>
+  `}).join('');
+
+  // Bind click events
+  $$('.sync-project-item').forEach(el => {
+    const projectId = el.dataset.projectId;
+    el.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('btn-icon') && !e.target.closest('.btn-icon')) {
+        switchToProject(projectId);
+      }
+    });
+  });
+
+  $$('.project-edit').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      editProject(btn.dataset.projectId);
+    });
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function switchToProject(projectId) {
+  const project = state.syncProjects.find(p => p.id === projectId);
+  if (!project) return;
+
+  // Save current project items before switching
+  saveCurrentProjectItems();
+
+  // Switch to new project
+  state.currentProjectId = projectId;
+
+  // Special handling for "all" project
+  if (projectId === '_all_') {
+    // Merge all projects' items
+    state.items = [];
+    state.syncProjects.forEach(p => {
+      if (p.id !== '_all_' && p.itemsData) {
+        state.items = state.items.concat(p.itemsData.map(item => ({
+          ...item,
+          _projectName: p.name || '未命名项目'
+        })));
+      }
+    });
+  } else {
+    state.items = project.itemsData || [];
+  }
+
+  // Update sync config
+  state.sync = {
+    id: project.syncId || "",
+    secret: project.secret || "",
+    token: project.token || "",
+    auto: !!project.auto,
+    lastSyncedAt: project.lastSyncedAt || 0
+  };
+
+  saveSyncProjects();
+  render();
+  renderSyncProjects();
+  toast(`已切换到项目：${project.name || '未命名项目'}`, 'ok');
+}
+
+function saveCurrentProjectItems() {
+  if (!state.currentProjectId) return;
+  const project = getCurrentProject();
+  if (project) {
+    project.itemsData = state.items;
+    saveSyncProjects();
+  }
+}
+
+function editProject(projectId) {
+  const project = state.syncProjects.find(p => p.id === projectId);
+  if (!project) return;
+
+  byId("sync-project-name").value = project.name || "";
+  byId("sync-id").value = project.syncId || "";
+  byId("sync-secret").value = project.secret || "";
+  byId("sync-auto").checked = !!project.auto;
+
+  byId("sync-config-panel").classList.remove("hidden");
+  byId("sync-config-panel").dataset.editingProjectId = projectId;
+}
+
+function createNewProject() {
+  byId("sync-project-name").value = "";
+  byId("sync-id").value = "";
+  byId("sync-secret").value = "";
+  byId("sync-auto").checked = false;
+
+  byId("sync-config-panel").classList.remove("hidden");
+  byId("sync-config-panel").dataset.editingProjectId = "";
+}
+
+function saveProjectConfig() {
+  const editingId = byId("sync-config-panel").dataset.editingProjectId;
+  const name = byId("sync-project-name").value.trim();
+  const syncId = byId("sync-id").value.trim();
+  const secret = byId("sync-secret").value;
+  const auto = byId("sync-auto").checked;
+
+  if (!name || !syncId || !secret) {
+    alert("请填写项目名称、Sync ID 和 Sync Secret");
+    return;
+  }
+
+  if (editingId) {
+    // Update existing project
+    const project = state.syncProjects.find(p => p.id === editingId);
+    if (project) {
+      project.name = name;
+      project.syncId = syncId;
+      project.secret = secret;
+      project.auto = auto;
+    }
+  } else {
+    // Create new project
+    const newProject = {
+      id: `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      name,
+      syncId,
+      secret,
+      auto,
+      lastSyncedAt: 0,
+      itemsData: []
+    };
+    state.syncProjects.push(newProject);
+  }
+
+  saveSyncProjects();
+  renderSyncProjects();
+  byId("sync-config-panel").classList.add("hidden");
+  toast(editingId ? '项目已更新' : '项目已创建', 'ok');
+}
+
+function deleteCurrentEditingProject() {
+  const editingId = byId("sync-config-panel").dataset.editingProjectId;
+  if (!editingId) return;
+
+  if (!confirm("确定要删除此项目？项目中的数据将会丢失。")) return;
+
+  state.syncProjects = state.syncProjects.filter(p => p.id !== editingId);
+
+  if (state.currentProjectId === editingId) {
+    state.currentProjectId = null;
+    state.items = [];
+    render();
+  }
+
+  saveSyncProjects();
+  renderSyncProjects();
+  byId("sync-config-panel").classList.add("hidden");
+  toast('项目已删除', 'ok');
+}
 
 function saveSyncConfig() {
   state.sync.id = byId("sync-id").value.trim();
   state.sync.secret = byId("sync-secret").value;
-  state.sync.token = byId("sync-token").value;
+  state.sync.token = getGlobalToken(); // Use global token
   const autoEl = byId('sync-auto');
   if (autoEl) state.sync.auto = !!autoEl.checked;
   localStorage.setItem(LS_SYNC, JSON.stringify(state.sync));
@@ -832,10 +1680,9 @@ function saveSyncConfig() {
 function loadSyncConfig() {
   try {
     const s = JSON.parse(localStorage.getItem(LS_SYNC) || "{}");
-    state.sync = { id: s.id || "", secret: s.secret || "", token: s.token || "", auto: !!s.auto, lastSyncedAt: s.lastSyncedAt || 0 };
+    state.sync = { id: s.id || "", secret: s.secret || "", token: getGlobalToken(), auto: !!s.auto, lastSyncedAt: s.lastSyncedAt || 0 };
     byId("sync-id").value = state.sync.id;
     byId("sync-secret").value = state.sync.secret;
-    byId("sync-token").value = state.sync.token;
     const autoEl = byId('sync-auto'); if (autoEl) autoEl.checked = !!state.sync.auto;
   } catch {}
 }
@@ -898,6 +1745,7 @@ async function syncPush() {
 async function syncPull() {
   saveSyncConfig();
   const { id, secret, token } = state.sync;
+  if (!token) { alert('请先设置 Server Token（点击标题 3 次）'); return; }
   if (!id || !secret) { alert("请填写 Sync ID 与 Sync Secret。"); return; }
   const key = await deriveSyncKey(secret, id);
   const res = await fetch(getSyncEndpoint(id), { headers: { ...(token ? { "X-Token": token } : {}) } });
@@ -924,6 +1772,58 @@ async function syncPull() {
 
 // load sync config at startup
 loadSyncConfig();
+
+// ---------- Cloud browse: aggregate codes ----------
+async function renderAllCloudCodes() {
+  const container = byId('cloud-allcodes');
+  const list = byId('cloud-allcodes-list');
+  const msg = byId('cloud-allcodes-msg');
+  if (!container || !list || !msg) return;
+  const token = getGlobalToken();
+  if (!token) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请先设置 Server Token（点击标题 3 次）'; return; }
+  const secret = (byId('cloud-browse-secret')?.value || '').trim();
+  if (!secret) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请输入默认 Sync Secret 以尝试解密'; return; }
+  const projects = state.cloudProjects || [];
+  if (!projects.length) { container.classList.add('hidden'); return; }
+  container.classList.remove('hidden');
+  list.innerHTML = '<div style="text-align:center; color: var(--muted); padding: 8px;">加载中…</div>';
+  msg.textContent = '';
+  const aggregated = [];
+  let failed = 0;
+  for (const proj of projects) {
+    const id = proj.syncId;
+    try {
+      const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
+      if (!res.ok) { failed++; continue; }
+      const payload = await res.json();
+      const key = await deriveSyncKey(secret, id);
+      const obj = await syncDecrypt(payload, key);
+      const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
+      aggregated.push(...items);
+    } catch { failed++; }
+  }
+  if (!aggregated.length) {
+    list.innerHTML = '<div class="card">无法解密任何项目，请检查 Sync Secret 是否正确。</div>';
+    msg.textContent = failed ? `有 ${failed} 个项目加载或解密失败` : '';
+    return;
+  }
+  // Render simple list of codes
+  list.innerHTML = '';
+  for (const item of aggregated.slice(0, 200)) { // cap to avoid extreme DOM
+    const row = document.createElement('div');
+    row.className = 'card';
+    row.style.display = 'flex'; row.style.justifyContent='space-between'; row.style.alignItems='center';
+    const left = document.createElement('div');
+    left.innerHTML = `<div style="font-weight:600;">${escapeHtml(item.issuer||'')} ${item.account?('· '+escapeHtml(item.account)) : ''}</div><div class=\"hint\">项目: ${escapeHtml(item._projectName||'-')}</div>`;
+    const right = document.createElement('div');
+    right.className = 'mono'; right.style.minWidth='96px'; right.textContent = '••••••';
+    row.appendChild(left); row.appendChild(right);
+    list.appendChild(row);
+    // compute code once
+    codeForItem(item).then(c => { right.textContent = formatCode(c, item.digits); }).catch(()=>{ right.textContent='ERR'; });
+  }
+  msg.textContent = failed ? `有 ${failed} 个项目加载或解密失败（其余已显示）` : '';
+}
 
 // ---------- Merge (conflict resolution) ----------
 function itemKey(it) {
@@ -1060,6 +1960,84 @@ async function revokeShare() {
   const res = await fetch(`/api/share/${encodeURIComponent(sid)}`, { method:'DELETE', headers });
   if (res.ok) { toast('已撤销分享', 'ok'); }
   else { toast(`撤销失败：${res.status}`, 'err'); }
+}
+
+// ---------- Cloud Shares (KV) ----------
+async function loadCloudShares() {
+  const listEl = byId('cloud-shares-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="text-align:center; color: var(--muted); padding: 12px;">加载中…</div>';
+
+  const token = getGlobalToken();
+  if (!token) {
+    listEl.innerHTML = '<div class="card">需要先设置 Global Server Token（点击标题 3 次）</div>';
+    return;
+  }
+  try {
+    const res = await fetch('/api/share/list', { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="card">加载失败：${res.status}</div>`;
+      return;
+    }
+    const data = await res.json().catch(() => ({ sids: [] }));
+    const sids = Array.isArray(data.sids) ? data.sids : [];
+    if (!sids.length) {
+      listEl.innerHTML = '<div class="card">云端暂无分享</div>';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const sid of sids) {
+      // Try fetch stored key
+      let keyStr = '';
+      try {
+        const kr = await fetch(`/api/sharekey/${encodeURIComponent(sid)}`, { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
+        if (kr.ok) { const j = await kr.json(); if (j && typeof j.k === 'string') keyStr = j.k; }
+      } catch {}
+
+      const item = document.createElement('div');
+      item.className = 'share-item';
+      item.innerHTML = `
+        <div class="share-info">
+          <div class="share-name">分享</div>
+          <div class="share-sid">SID: ${sid}</div>
+        </div>
+        <div class="share-actions">
+          <button class="secondary copy">复制链接</button>
+          <button class="secondary revoke">撤销</button>
+        </div>
+      `;
+      listEl.appendChild(item);
+
+      const onCopy = async () => {
+        if (keyStr) {
+          const ok = await copyTextToClipboard(`${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#k=${keyStr}`);
+          toast(ok ? '已复制链接' : '复制失败', ok ? 'ok' : 'err');
+        } else {
+          const ok = await copyTextToClipboard(sid);
+          toast(ok ? '未保存密钥，已复制 SID' : '复制失败', ok ? 'warn' : 'err');
+        }
+      };
+      const onRevoke = async () => {
+        try {
+          const r = await fetch(`/api/share/${encodeURIComponent(sid)}`, { method:'DELETE', headers: { 'X-Token': token } });
+          if (r.ok) {
+            // Best-effort delete saved key
+            try { await fetch(`/api/sharekey/${encodeURIComponent(sid)}`, { method:'DELETE', headers: { 'X-Token': token } }); } catch {}
+            item.remove();
+            toast('已撤销分享', 'ok');
+          } else {
+            toast(`撤销失败：${r.status}`,'err');
+          }
+        } catch {
+          toast('网络错误','err');
+        }
+      };
+      item.querySelector('.copy').addEventListener('click', onCopy);
+      item.querySelector('.revoke').addEventListener('click', onRevoke);
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div class="card">网络错误，请重试</div>';
+  }
 }
 
 // ---------- Auto Sync helpers ----------
