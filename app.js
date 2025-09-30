@@ -1808,18 +1808,6 @@ async function renderAllCloudCodes() {
   const secretRaw = (byId('cloud-browse-secret')?.value || '').trim();
   const defaultSecrets = secretRaw.split(/\n|,/).map(s=>s.trim()).filter(Boolean);
   if (defaultSecrets.length === 0) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请输入默认 Sync Secret（可多个，以逗号或换行分隔）'; return; }
-  const mapStr = (byId('cloud-browse-secrets-map')?.value || '').trim();
-  const perProject = new Map();
-  if (mapStr) {
-    for (const line of mapStr.split(/\n+/)) {
-      const t = line.trim(); if (!t) continue;
-      const m = t.split(/[:=]/); if (m.length < 2) continue;
-      const pid = m.shift().trim(); const sec = m.join('=').trim();
-      if (!pid || !sec) continue;
-      const arr = (perProject.get(pid) || []);
-      arr.push(sec); perProject.set(pid, arr);
-    }
-  }
   const projects = state.cloudProjects || [];
   if (!projects.length) { container.classList.add('hidden'); return; }
   container.classList.remove('hidden');
@@ -1833,18 +1821,32 @@ async function renderAllCloudCodes() {
       const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
       if (!res.ok) { failed++; continue; }
       const payload = await res.json();
-      const trySecrets = perProject.get(id) || defaultSecrets;
-      let ok = false;
-      for (const sec of trySecrets) {
-        try {
-          const key = await deriveSyncKey(sec, id);
-          const obj = await syncDecrypt(payload, key);
-          const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
-          aggregated.push(...items);
-          ok = true; break;
-        } catch {}
+      // Concurrently try all provided secrets; take the first successful decrypt
+      const attempts = defaultSecrets.map(sec => (async () => {
+        const key = await deriveSyncKey(sec, id);
+        const obj = await syncDecrypt(payload, key);
+        const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
+        return items;
+      })());
+      let items = null;
+      try {
+        // Prefer Promise.any (first fulfilled); fall back to manual if not available
+        if (typeof Promise.any === 'function') {
+          items = await Promise.any(attempts);
+        } else {
+          items = await new Promise((resolve, reject) => {
+            let pending = attempts.length;
+            attempts.forEach(p => Promise.resolve(p).then(resolve).catch(() => { if (--pending === 0) reject(new Error('all-failed')); }));
+          });
+        }
+      } catch {
+        items = null;
       }
-      if (!ok) failed++;
+      if (items && items.length) {
+        aggregated.push(...items);
+      } else {
+        failed++;
+      }
     } catch { failed++; }
   }
   if (!aggregated.length) {
