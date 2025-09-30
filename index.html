@@ -362,11 +362,15 @@
             <span>全部显示（尝试显示所有云端项目里的验证码）</span>
           </label>
           <label>
-            默认 Sync Secret（用于解密）
+            默认 Sync Secret（用于解密，可填多个，逗号或换行分隔）
             <div class="token-input-wrapper">
-              <input id="cloud-browse-secret" type="password" placeholder="用于解密所有项目，若不同项目密钥不同将无法解密" />
+              <input id="cloud-browse-secret" type="password" placeholder="secretA, secretB 或每行一个" />
               <button type="button" id="cloud-browse-secret-toggle" class="token-toggle" title="显示/隐藏">👁️</button>
             </div>
+          </label>
+          <label>
+            每项目 Secret 映射（可选；每行写成 SyncId=Secret 或 SyncId:Secret）
+            <textarea id="cloud-browse-secrets-map" placeholder="project-1=secret1\nproject-2:secret2"></textarea>
           </label>
           <div id="cloud-allcodes" class="hidden" style="margin-top: 12px;">
             <h4>全部云端验证码</h4>

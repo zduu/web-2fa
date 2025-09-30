@@ -30,5 +30,11 @@ export async function onRequest(context) {
     return new Response('OK', { status: 200, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, PUT, POST' } });
+  if (request.method === 'DELETE') {
+    if (needToken && tokenHeader !== env.SYNC_TOKEN) return new Response('Unauthorized', { status: 401 });
+    await env.AUTH_KV.delete(key);
+    return new Response('OK', { status: 200, headers: { 'Cache-Control': 'no-store' } });
+  }
+
+  return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, PUT, POST, DELETE' } });
 }

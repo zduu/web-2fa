@@ -1036,7 +1036,13 @@ async function loadCloudProjects() {
           importCloudProject(proj.syncId);
         });
 
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "btn-small secondary";
+        deleteBtn.textContent = "删除（云端）";
+        deleteBtn.addEventListener("click", () => deleteCloudProject(proj.syncId));
+
         actionsEl.appendChild(importBtn);
+        actionsEl.appendChild(deleteBtn);
         header.appendChild(idEl);
         header.appendChild(actionsEl);
 
@@ -1092,6 +1098,24 @@ function importCloudProject(syncId) {
   }
 
   toast("请输入 Sync Secret 以解密云端数据", "ok");
+}
+
+async function deleteCloudProject(syncId) {
+  if (!syncId) return;
+  const token = getGlobalToken();
+  if (!token) { alert('请先设置 Server Token（点击标题 3 次）'); return; }
+  if (!confirm(`确定要删除云端项目“${syncId}”？此操作不可恢复，将移除云端加密数据。`)) return;
+  try {
+    const res = await fetch(getSyncEndpoint(syncId), { method: 'DELETE', headers: { 'X-Token': token } });
+    if (res.ok) {
+      toast('已删除云端项目', 'ok');
+      await loadCloudProjects();
+    } else {
+      alert('删除失败：' + res.status);
+    }
+  } catch {
+    alert('网络错误，删除失败');
+  }
 }
 
 // ---------- Events ----------
@@ -1781,8 +1805,21 @@ async function renderAllCloudCodes() {
   if (!container || !list || !msg) return;
   const token = getGlobalToken();
   if (!token) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请先设置 Server Token（点击标题 3 次）'; return; }
-  const secret = (byId('cloud-browse-secret')?.value || '').trim();
-  if (!secret) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请输入默认 Sync Secret 以尝试解密'; return; }
+  const secretRaw = (byId('cloud-browse-secret')?.value || '').trim();
+  const defaultSecrets = secretRaw.split(/\n|,/).map(s=>s.trim()).filter(Boolean);
+  if (defaultSecrets.length === 0) { container.classList.remove('hidden'); list.innerHTML=''; msg.textContent='请输入默认 Sync Secret（可多个，以逗号或换行分隔）'; return; }
+  const mapStr = (byId('cloud-browse-secrets-map')?.value || '').trim();
+  const perProject = new Map();
+  if (mapStr) {
+    for (const line of mapStr.split(/\n+/)) {
+      const t = line.trim(); if (!t) continue;
+      const m = t.split(/[:=]/); if (m.length < 2) continue;
+      const pid = m.shift().trim(); const sec = m.join('=').trim();
+      if (!pid || !sec) continue;
+      const arr = (perProject.get(pid) || []);
+      arr.push(sec); perProject.set(pid, arr);
+    }
+  }
   const projects = state.cloudProjects || [];
   if (!projects.length) { container.classList.add('hidden'); return; }
   container.classList.remove('hidden');
@@ -1796,10 +1833,18 @@ async function renderAllCloudCodes() {
       const res = await fetch(getSyncEndpoint(id), { headers: { 'X-Token': token, 'Cache-Control': 'no-cache' } });
       if (!res.ok) { failed++; continue; }
       const payload = await res.json();
-      const key = await deriveSyncKey(secret, id);
-      const obj = await syncDecrypt(payload, key);
-      const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
-      aggregated.push(...items);
+      const trySecrets = perProject.get(id) || defaultSecrets;
+      let ok = false;
+      for (const sec of trySecrets) {
+        try {
+          const key = await deriveSyncKey(sec, id);
+          const obj = await syncDecrypt(payload, key);
+          const items = (obj.items || []).map(ensureItemDefaults).map(it => ({ ...it, _projectName: id }));
+          aggregated.push(...items);
+          ok = true; break;
+        } catch {}
+      }
+      if (!ok) failed++;
     } catch { failed++; }
   }
   if (!aggregated.length) {

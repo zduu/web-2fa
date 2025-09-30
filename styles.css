@@ -91,10 +91,10 @@ video{width:320px; height:240px; background:#0b0f14; border:1px solid #1a1f25; b
 .toast.err{border-color:#5a2323; background:#1a0f0f}
 
 /* Modal */
-.modal{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:900; animation:modalFadeIn 0.25s ease}
+.modal{position:fixed; inset:0; display:flex; align-items:flex-start; justify-content:center; z-index:900; animation:modalFadeIn 0.25s ease; overflow:auto; padding:4vh 0}
 .modal.hidden{display:none}
 .modal-backdrop{position:absolute; inset:0; background:rgba(0,0,0,.5); backdrop-filter: blur(4px); animation:backdropFadeIn 0.25s ease}
-.modal-panel{position:relative; width:min(520px, 92vw); animation:panelSlideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)}
+.modal-panel{position:relative; width:min(520px, 92vw); max-height:85vh; overflow:auto; animation:panelSlideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)}
 
 @keyframes modalFadeIn{from{opacity:0}}
 @keyframes backdropFadeIn{from{opacity:0}}
