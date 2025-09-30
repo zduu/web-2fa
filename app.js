@@ -1740,6 +1740,13 @@ function renderSyncProjects() {
 
   const allProjects = [allProjectsEntry, ...state.syncProjects];
 
+  // Detect duplicate Sync IDs (excluding virtual)
+  const idCount = new Map();
+  for (const p of state.syncProjects) {
+    const k = (p.syncId || '').trim();
+    if (!k) continue; idCount.set(k, (idCount.get(k) || 0) + 1);
+  }
+
   if (state.syncProjects.length === 0) {
     list.innerHTML = '';
     return;
@@ -1748,11 +1755,12 @@ function renderSyncProjects() {
   list.innerHTML = allProjects.map(project => {
     const isActive = project.id === state.currentProjectId;
     const isVirtual = project.isVirtual;
+    const isDup = !isVirtual && project.syncId && idCount.get(project.syncId) > 1;
 
     return `
     <div class="sync-project-item ${isActive ? 'active' : ''} ${isVirtual ? 'virtual-project' : ''}" data-project-id="${project.id}">
       <div class="project-info">
-        <div class="project-name">${isVirtual ? '📊 ' : ''}${escapeHtml(project.name || '未命名项目')}</div>
+        <div class="project-name">${isVirtual ? '📊 ' : ''}${escapeHtml(project.name || '未命名项目')}${isDup ? ' <span class="project-badge" style="background:#1a150b;color:#ffb366;border-color:#5a4a1f">ID 重复</span>' : ''}</div>
         <div class="project-id">${isVirtual ? '只读视图，显示所有项目的验证码' : 'ID: ' + escapeHtml(project.syncId || '-')}</div>
       </div>
       ${isActive ? '<span class="project-badge">当前</span>' : ''}
@@ -1881,6 +1889,13 @@ function saveProjectConfig() {
   if (!name || !syncId || !secret) {
     alert("请填写项目名称、Sync ID 和 Sync Secret");
     return;
+  }
+
+  // Prevent accidental duplicate Sync ID
+  const dup = (state.syncProjects || []).find(p => p.id !== editingId && (p.syncId || '').trim() === syncId);
+  if (dup) {
+    const ok = confirm(`警告：已有项目使用相同的 Sync ID（${dup.name || dup.id}）。继续保存将导致它们指向同一云端数据并互相覆盖。仍要继续？`);
+    if (!ok) return;
   }
 
   if (editingId) {
