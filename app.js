@@ -1898,6 +1898,7 @@ function saveProjectConfig() {
     if (!ok) return;
   }
 
+  let targetId = editingId;
   if (editingId) {
     // Update existing project
     const project = state.syncProjects.find(p => p.id === editingId);
@@ -1919,12 +1920,16 @@ function saveProjectConfig() {
       itemsData: []
     };
     state.syncProjects.push(newProject);
+    targetId = newProject.id;
   }
 
   saveSyncProjects();
   renderSyncProjects();
   byId("sync-config-panel").classList.add("hidden");
   toast(editingId ? '项目已更新' : '项目已创建', 'ok');
+
+  // Make the edited/new project the active one to avoid pushing to the wrong Sync ID
+  if (targetId) switchToProject(targetId);
 }
 
 function deleteCurrentEditingProject() {
@@ -2009,6 +2014,11 @@ function getSyncEndpoint(id) {
 
 async function syncPush() {
   saveSyncConfig();
+  // Ensure we are pushing the currently selected project's config
+  const cur = getCurrentProject();
+  if (!cur) { alert('请先选择要同步的项目'); return; }
+  state.sync.id = cur.syncId || '';
+  state.sync.secret = cur.secret || '';
   const { id, secret, token } = state.sync;
   if (!id || !secret) { alert("请填写 Sync ID 与 Sync Secret。"); return; }
   const key = await deriveSyncKey(secret, id);
