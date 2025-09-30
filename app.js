@@ -1418,6 +1418,8 @@ function bindEvents() {
   byId("sync-push").addEventListener("click", syncPush);
   byId("sync-pull").addEventListener("click", syncPull);
   byId("sync-clean").addEventListener("click", syncClean);
+  const mergeAllBtn = byId("sync-merge-all");
+  if (mergeAllBtn) mergeAllBtn.addEventListener("click", mergeAllIntoCurrent);
   byId("share-revoke").addEventListener("click", revokeShare);
   const autoEl = byId('sync-auto');
   if (autoEl) autoEl.addEventListener('change', () => {
@@ -1807,6 +1809,8 @@ function switchToProject(projectId) {
     });
     // Do not override state.sync here to avoid accidental cross-project actions
     saveSyncProjects();
+    // Auto-sync should be disabled in aggregated view
+    stopAutoSync();
     render();
     renderSyncProjects();
     toast('已切换到：全部项目（汇总视图）', 'ok');
@@ -1816,7 +1820,8 @@ function switchToProject(projectId) {
   // Normal project
   const project = state.syncProjects.find(p => p.id === projectId);
   if (!project) return;
-  state.items = project.itemsData || [];
+  // Use a deep copy to avoid array/object reference联动
+  state.items = (project.itemsData || []).map(it => ({ ...it }));
   // Update sync config for this project
   state.sync = {
     id: project.syncId || "",
@@ -1826,6 +1831,8 @@ function switchToProject(projectId) {
     lastSyncedAt: project.lastSyncedAt || 0
   };
   saveSyncProjects();
+  // Align auto-sync state for the selected project
+  if (state.sync.auto) startAutoSync(); else stopAutoSync();
   render();
   renderSyncProjects();
   toast(`已切换到项目：${project.name || '未命名项目'}`, 'ok');
@@ -1835,7 +1842,8 @@ function saveCurrentProjectItems() {
   if (!state.currentProjectId) return;
   const project = getCurrentProject();
   if (project) {
-    project.itemsData = state.items;
+    // Deep copy to detach references between projects
+    project.itemsData = (state.items || []).map(it => ({ ...it }));
     saveSyncProjects();
   }
 }
@@ -2642,6 +2650,29 @@ async function syncClean() {
   render();
   scheduleAutoPush();
   alert('已清理。');
+}
+
+// ---------- Merge all saved projects into current ----------
+async function mergeAllIntoCurrent() {
+  if (!state.currentProjectId || state.currentProjectId === '_all_') { alert('请切换到具体项目后再执行合并'); return; }
+  const target = getCurrentProject(); if (!target) { alert('未找到当前项目'); return; }
+  if (!confirm('将把所有已保存项目（本地）的条目合并到“当前项目”，并推送到其云端。继续？')) return;
+  // Build union using existing merge logic (prefers 最新 updatedAt; shares 合并)
+  let union = [];
+  for (const p of (state.syncProjects || [])) {
+    if (!p || !Array.isArray(p.itemsData)) continue;
+    union = mergeItems(union, p.itemsData);
+  }
+  // stats
+  const before = Array.isArray(target.itemsData) ? target.itemsData.length : 0;
+  const afterMap = new Map(union.map(x => [itemKey(x), x]));
+  const after = afterMap.size;
+  // Write into target
+  target.itemsData = Array.from(afterMap.values()).map(it => ({ ...it, deleted: !!it.deleted }));
+  saveSyncProjects();
+  if (state.currentProjectId === target.id) { state.items = target.itemsData.map(x => ({ ...x })); render(); }
+  toast(`合并完成：当前项目 ${before} → ${after} 条`, 'ok');
+  try { await pushProject(target); toast('已推送到云端', 'ok'); } catch { toast('推送失败', 'err'); }
 }
 
 // ---------- Global Gate (ACCESS_GATE) ----------
