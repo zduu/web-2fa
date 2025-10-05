@@ -2032,28 +2032,51 @@ async function syncPush() {
 }
 
 async function syncPull() {
+  // Keep UI flags (like auto) from the panel, but always use the currently selected project
   saveSyncConfig();
+
+  // Ensure we are pulling for the currently selected project
+  const cur = getCurrentProject();
+  if (!cur || state.currentProjectId === '_all_') {
+    alert('请先选择具体项目（不能在“全部项目”视图下拉取）');
+    return;
+  }
+
+  // Override id/secret from the selected project to avoid cross-project pulls
+  state.sync.id = cur.syncId || '';
+  state.sync.secret = cur.secret || '';
+
   const { id, secret, token } = state.sync;
   if (!token) { alert('请先设置 Server Token（点击标题 3 次）'); return; }
-  if (!id || !secret) { alert("请填写 Sync ID 与 Sync Secret。"); return; }
+  if (!id || !secret) { alert('请填写 Sync ID 与 Sync Secret。'); return; }
+
   const key = await deriveSyncKey(secret, id);
-  const res = await fetch(getSyncEndpoint(id), { headers: { ...(token ? { "X-Token": token } : {}) } });
-  if (res.status === 404) { alert("云端暂无数据。"); updateSyncStatus('云端暂无', 'warn'); return; }
+  const res = await fetch(getSyncEndpoint(id), { headers: { ...(token ? { 'X-Token': token } : {}) } });
+  if (res.status === 404) { alert('云端暂无数据。'); updateSyncStatus('云端暂无', 'warn'); return; }
   if (!res.ok) { alert(`拉取失败：${res.status}`); updateSyncStatus('拉取失败', 'err'); toast('拉取失败', 'err'); return; }
+
   const payload = await res.json();
   try {
     const obj = await syncDecrypt(payload, key);
     const remote = (obj.items || []).map(ensureItemDefaults);
+    // Merge into current in-memory items for the selected project
     state.items = mergeItems(state.items, remote);
     await persist();
     render();
-    state.sync.lastSyncedAt = Date.now();
+
+    // Write back merged result to the selected project and record last synced time
+    cur.itemsData = (state.items || []).map(it => ({ ...it }));
+    const ts = Date.now();
+    cur.lastSyncedAt = ts;
+    state.sync.lastSyncedAt = ts;
+    saveSyncProjects();
     localStorage.setItem(LS_SYNC, JSON.stringify(state.sync));
+
     updateSyncStatus('已同步', 'ok');
     toast('已同步', 'ok');
   } catch (e) {
     console.error(e);
-    alert("解密失败，请检查 Sync Secret 是否一致。");
+    alert('解密失败，请检查 Sync Secret 是否一致。');
     updateSyncStatus('解密失败', 'err');
     toast('解密失败', 'err');
   }
