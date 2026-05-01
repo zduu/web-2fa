@@ -1,23 +1,50 @@
-const CACHE = '2fa-cache-v3';
+const CACHE = '2fa-cache-v4';
 const ASSETS = [
   '/',
   '/index.html',
-  '/gate.html',
   '/styles.css',
   '/app.js',
   '/shared.html',
   '/shared.js',
-  '/shares.html',
-  '/shares.js',
+  '/gate.html',
   '/manifest.webmanifest',
   '/icon.svg',
-  '/icon-maskable.svg'
+  '/icon-maskable.svg',
+
+  // src/core
+  '/src/core/totp.js',
+  '/src/core/crypto.js',
+  '/src/core/storage.js',
+
+  // src/sync
+  '/src/sync/sync.js',
+  '/src/sync/projects.js',
+  '/src/sync/vault.js',
+  '/src/sync/cloud.js',
+
+  // src/share
+  '/src/share/share.js',
+
+  // src/ui
+  '/src/ui/home.js',
+  '/src/ui/add.js',
+  '/src/ui/scanner.js',
+  '/src/ui/drawer.js',
+  '/src/ui/modal.js',
+  '/src/ui/toast.js',
+  '/src/ui/ring.js',
+  '/src/ui/avatar.js',
+  '/src/ui/import-export.js',
+
+  // src/admin
+  '/src/admin/unlock.js',
 ];
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    await c.addAll(ASSETS);
+    // best-effort: don't fail install if some optional asset is missing
+    await Promise.all(ASSETS.map(a => c.add(a).catch(() => {})));
     self.skipWaiting();
   })());
 });
@@ -35,7 +62,6 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === location.origin) {
-    // Never cache API requests — always hit network
     if (url.pathname.startsWith('/api/')) return;
     if (req.mode === 'navigate') {
       e.respondWith((async () => {

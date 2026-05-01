@@ -59,6 +59,8 @@ async function main() {
   const label = (data.label || '共享验证码');
   document.getElementById('lbl').textContent = label;
   document.getElementById('algo').textContent = `${(data.algorithm||'SHA1').toUpperCase()} · ${data.digits||6}位 · ${data.period||30}s`;
+  const periodInfo = document.getElementById('period-info');
+  if (periodInfo) periodInfo.textContent = `周期 ${data.period||30}s`;
   async function renderOnce() {
     try {
       const code = await totpB32(data.secret, data);
@@ -67,7 +69,15 @@ async function main() {
     const left = secondsLeft(data.period);
     document.querySelector('.left').textContent = String(left);
     const pct = (left / Math.max(5, data.period || 30)) * 100;
-    document.querySelector('.bar').style.background = `linear-gradient(90deg, var(--ok) ${pct}%, #1a1f25 ${pct}%)`;
+    const bar = document.querySelector('.bar');
+    if (bar) {
+      bar.style.width = pct + '%';
+      bar.style.background = left <= 5
+        ? 'linear-gradient(90deg, #ef4444, #f59e0b)'
+        : left <= 10
+          ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
+          : 'linear-gradient(90deg, var(--ok), var(--primary))';
+    }
   }
   renderOnce(); setInterval(renderOnce, 1000);
   document.getElementById('copy').addEventListener('click', async () => {

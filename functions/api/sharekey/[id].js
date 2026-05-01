@@ -1,11 +1,20 @@
+// 分享密钥端点（管理员视角的密钥托管）
+// 鉴权：X-Token 匹配 ADMIN_KEY 或 SYNC_TOKEN
+function isAuthed(env, token) {
+  if (!token) return false;
+  if (env.ADMIN_KEY && token === env.ADMIN_KEY) return true;
+  if (env.SYNC_TOKEN && token === env.SYNC_TOKEN) return true;
+  return false;
+}
+function needsAuth(env) { return !!(env.ADMIN_KEY || env.SYNC_TOKEN); }
+
 export async function onRequest(context) {
   const { request, env, params } = context;
   const id = params.id;
   if (!id) return new Response('Missing id', { status: 400 });
   const key = `sharekey:${id}`;
   const tokenHeader = request.headers.get('X-Token');
-  const needToken = !!env.SYNC_TOKEN;
-  if (needToken && tokenHeader !== env.SYNC_TOKEN) return new Response('Unauthorized', { status: 401 });
+  if (needsAuth(env) && !isAuthed(env, tokenHeader)) return new Response('Unauthorized', { status: 401 });
 
   const url = new URL(request.url);
   const ttlParam = url.searchParams.get('ttl');
@@ -13,9 +22,7 @@ export async function onRequest(context) {
   if (ttlParam) {
     const s = ttlParam.toLowerCase();
     if (s === 'perm' || s === '0' || s === 'permanent') ttl = 0;
-    else {
-      const n = Number(s); if (Number.isFinite(n) && n > 0) ttl = Math.round(n);
-    }
+    else { const n = Number(s); if (Number.isFinite(n) && n > 0) ttl = Math.round(n); }
   }
 
   if (request.method === 'GET') {
@@ -28,13 +35,12 @@ export async function onRequest(context) {
     const text = await request.text();
     try {
       const obj = JSON.parse(text);
-      if (!obj || typeof obj.k !== 'string') throw new Error('invalid');
+      if (!obj || typeof obj !== 'object' || typeof obj.k !== 'string') throw new Error('invalid');
     } catch {
       return new Response('Bad Request', { status: 400 });
     }
     if (ttl === 0 || ttl === undefined) {
-      // undefined => no explicit TTL; let it be permanent unless KV lifecycle rules apply
-      if (ttl === 0) await env.AUTH_KV.put(key, text); else await env.AUTH_KV.put(key, text);
+      await env.AUTH_KV.put(key, text);
     } else {
       await env.AUTH_KV.put(key, text, { expirationTtl: ttl });
     }
@@ -48,4 +54,3 @@ export async function onRequest(context) {
 
   return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, PUT, POST, DELETE' } });
 }
-

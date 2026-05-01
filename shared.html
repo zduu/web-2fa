@@ -1,40 +1,98 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>共享验证码</title>
-    <meta name="theme-color" content="#0b0d10">
-    <link rel="stylesheet" href="styles.css" />
-    <style>
-      body{display:flex; min-height:100vh; align-items:center; justify-content:center; padding:16px}
-      .share-card{max-width:480px; width:100%;}
-      .share-title{display:flex; justify-content:space-between; align-items:center}
-      .share-title small{color:var(--muted)}
-      .center{display:flex; flex-direction:column; align-items:center; gap:12px}
-      .big{font-size:clamp(28px, 8vw, 44px); font-weight:800; letter-spacing:2px}
-      @media (max-width: 640px){ .period{width:100%} }
-    </style>
-  </head>
-  <body>
-    <main class="card share-card">
-      <div class="share-title">
-        <h2 id="lbl">共享验证码</h2>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>共享验证码</title>
+  <meta name="theme-color" content="#0a0d12">
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+    .share-wrap { width: min(440px, 100%); }
+    .share-head {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+    }
+    .share-head .logo {
+      width: 40px; height: 40px; border-radius: 12px;
+      background: linear-gradient(135deg, var(--primary), #22c55e);
+      display: grid; place-items: center; color: white; font-weight: 700; font-size: 18px;
+      box-shadow: 0 4px 14px rgba(91, 141, 239, 0.4);
+    }
+    .share-head h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    .share-head .sub { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+    .share-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+    .label-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+    .label-row #lbl { margin: 0; font-size: 16px; font-weight: 600; }
+    .label-row small { color: var(--fg-muted); font-size: 12px; }
+    .code-display {
+      margin: 24px 0 18px;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: clamp(36px, 10vw, 56px);
+      font-weight: 700;
+      letter-spacing: 6px;
+      font-variant-numeric: tabular-nums;
+      background: linear-gradient(135deg, #cfe1ff, #b8f2cb);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .progress-line {
+      width: 100%; height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px; overflow: hidden;
+      position: relative;
+    }
+    .progress-line .bar {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      width: 0; background: linear-gradient(90deg, var(--ok), var(--primary));
+      transition: width 0.5s linear;
+      border-radius: 999px;
+    }
+    .progress-meta {
+      display: flex; justify-content: space-between;
+      font-size: 12px; color: var(--fg-muted);
+      margin-top: 8px;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 20px; }
+    .actions button { flex: 1; }
+    .err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="share-wrap">
+    <div class="share-head">
+      <div class="logo">2F</div>
+      <div>
+        <h1>共享验证码</h1>
+        <div class="sub">端到端加密 · 链接有效期内可用</div>
+      </div>
+    </div>
+
+    <article class="share-card">
+      <div class="label-row">
+        <h2 id="lbl">加载中…</h2>
         <small id="algo"></small>
       </div>
-      <div class="center">
-        <div id="code" class="big">……</div>
-        <div class="period" style="width:100%">
-          <div class="bar"></div>
-          <span class="left"></span>
-        </div>
-        <div class="buttons">
-          <button id="copy">复制</button>
-          <button id="copy-link" class="secondary">复制链接</button>
-        </div>
+      <div id="code" class="code-display">— —</div>
+      <div class="progress-line"><div class="bar"></div></div>
+      <div class="progress-meta">
+        <span id="period-info"></span>
+        <span><span class="left">--</span>s</span>
       </div>
-    </main>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="shared.js" type="module"></script>
-  </body>
-  </html>
+      <div class="actions">
+        <button class="btn" id="copy">📋 复制验证码</button>
+        <button class="btn ghost" id="copy-link">复制链接</button>
+      </div>
+    </article>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="shared.js" type="module"></script>
+</body>
+</html>

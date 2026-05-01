@@ -1,3 +1,18 @@
+// 分享端点
+// 写权限鉴权：X-Token 匹配 ADMIN_KEY 或 SYNC_TOKEN（向后兼容）
+// 读权限：始终公开（密钥通过 URL 片段传递，没密钥也解不开）
+
+function isAuthed(env, token) {
+  if (!token) return false;
+  if (env.ADMIN_KEY && token === env.ADMIN_KEY) return true;
+  if (env.SYNC_TOKEN && token === env.SYNC_TOKEN) return true;
+  return false;
+}
+
+function needsAuthForWrite(env) {
+  return !!(env.ADMIN_KEY || env.SYNC_TOKEN);
+}
+
 export async function onRequest(context) {
   const { request, env, params } = context;
   const id = params.id;
@@ -5,7 +20,7 @@ export async function onRequest(context) {
   const key = `share:${id}`;
   const url = new URL(request.url);
   const ttlParam = url.searchParams.get('ttl');
-  // default TTL from env; if <=0 or invalid => permanent by default
+
   let defaultTtl = Number(env.SHARE_TTL ?? 86400);
   let defaultPermanent = !(Number.isFinite(defaultTtl) && defaultTtl > 0);
   let usePermanent = defaultPermanent;
@@ -22,7 +37,7 @@ export async function onRequest(context) {
       }
     }
   }
-  const needToken = !!env.SYNC_TOKEN;
+
   const tokenHeader = request.headers.get('X-Token');
 
   if (request.method === 'GET' || request.method === 'HEAD') {
@@ -34,7 +49,7 @@ export async function onRequest(context) {
   }
 
   if (request.method === 'PUT' || request.method === 'POST') {
-    if (needToken && tokenHeader !== env.SYNC_TOKEN) return new Response('Unauthorized', { status: 401 });
+    if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return new Response('Unauthorized', { status: 401 });
     const text = await request.text();
     try {
       const obj = JSON.parse(text);
@@ -51,9 +66,8 @@ export async function onRequest(context) {
   }
 
   if (request.method === 'DELETE') {
-    if (needToken && tokenHeader !== env.SYNC_TOKEN) return new Response('Unauthorized', { status: 401 });
+    if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return new Response('Unauthorized', { status: 401 });
     await env.AUTH_KV.delete(key);
-    // also delete stored key if present
     try { await env.AUTH_KV.delete(`sharekey:${id}`); } catch {}
     return new Response('OK', { status: 200, headers: { 'Cache-Control': 'no-store' } });
   }

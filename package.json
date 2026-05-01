@@ -6,5 +6,8 @@
     "dev": "wrangler pages dev .",
     "dev:https": "wrangler pages dev . --local-protocol https",
     "dev:remote": "wrangler pages dev . --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.87.0"
   }
 }

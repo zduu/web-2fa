@@ -9,15 +9,21 @@ kv_namespaces = [
 ]
 
 [vars]
-# 可选：与客户端填写的 Server Token 一致
-SYNC_TOKEN = "change-me"
+# === 推荐：单一管理员密钥（同时承担同步写入鉴权 + 云端浏览鉴权 + 分享写入鉴权） ===
+# ADMIN_KEY = "your-admin-master-key"
 
-# 可选：全站访问口令
+# === 同步访问模式 ===
+# strict（默认）= 读取也需要 ADMIN_KEY；普通访客无法下载任何同步密文
+# open          = 读取公开，写入仍需鉴权（旧行为，与早期部署兼容）
+# SYNC_MODE = "strict"
+
+# === 全站访问口令（可选） ===
+# 启用后所有页面/API 需先验证 cookie；与 ADMIN_KEY 相互独立
 # ACCESS_GATE = "your-site-password"
 
-# 可选：分享默认有效期（秒），≤0 表示永久
+# === 分享默认有效期（秒，<=0 表示永久，可选） ===
 # SHARE_TTL = "86400"
 
-# 可选：云端浏览管理员密钥（用于查看所有同步项目）
-# KV_ADMIN_KEY = "your-admin-key"
-
+# === 旧版兼容字段（不需要可不设） ===
+# SYNC_TOKEN     = "legacy-token"          # 与 ADMIN_KEY 等价的旧名，二者任一匹配即通过
+# KV_ADMIN_KEY   = "legacy-kv-admin-key"   # 旧的云端浏览专用密钥
