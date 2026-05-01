@@ -162,6 +162,7 @@ function addManyToCurrent(rawItems) {
     if (match.deleted) {
       Object.assign(match, normalized, {
         id: match.id,
+        password: normalized.password || match.password || "",
         deleted: false,
         updatedAt: Date.now(),
         shares: Array.isArray(match.shares) ? match.shares : [],
@@ -203,6 +204,7 @@ function normalizeImportedItem(raw) {
     type: raw?.type || "totp",
     issuer: String(raw?.issuer || "").trim(),
     account: String(raw?.account || "").trim(),
+    password: typeof raw?.password === "string" ? raw.password : "",
     secret: raw?.secret || "",
     algorithm: raw?.algorithm || "SHA1",
     digits: Number(raw?.digits || 6),

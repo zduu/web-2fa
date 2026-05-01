@@ -28,6 +28,7 @@ export const state = {
 
 export function ensureItemDefaults(it) {
   const out = { ...it };
+  out.password = typeof out.password === "string" ? out.password : "";
   out.secret = (out.secret || "").replace(/\s+/g, "").toUpperCase();
   out.type = out.type || "totp";
   out.algorithm = (out.algorithm || "SHA1").toUpperCase();

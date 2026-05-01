@@ -220,6 +220,7 @@ async function mergeIntoCurrent(rawItems, strategy = "overwrite") {
       exist.type = it.type;
       exist.issuer = it.issuer;
       exist.account = it.account;
+      exist.password = typeof it.password === "string" ? it.password : (exist.password || "");
       exist.secret = (it.secret || "").replace(/\s+/g, "").toUpperCase();
       exist.algorithm = (it.algorithm || "SHA1").toUpperCase();
       exist.digits = Number(it.digits || 6);

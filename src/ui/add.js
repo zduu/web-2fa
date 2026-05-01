@@ -29,6 +29,13 @@ export function openAddModal({ onSubmit, onScan } = {}) {
           <label>账号 <span class="muted">（可选）</span></label>
           <input id="f-account" class="input" placeholder="如：me@example.com" />
         </div>
+        <div class="field mt-2">
+          <label>密码 <span class="muted">（可选）</span></label>
+          <div class="input-with-toggle">
+            <input id="f-password" class="input" type="password" placeholder="如需一起保存可填写" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+            <button type="button" class="toggle" data-toggle-password>👁</button>
+          </div>
+        </div>
 
         <details class="mt-3" id="adv">
           <summary class="hint" style="cursor:pointer; user-select:none;">高级选项（算法 / 位数 / 周期 / HOTP）</summary>
@@ -119,6 +126,13 @@ export function openAddModal({ onSubmit, onScan } = {}) {
       }));
 
       const typeSel = r.querySelector("#f-type");
+      const passwordToggle = r.querySelector("[data-toggle-password]");
+      if (passwordToggle) {
+        passwordToggle.addEventListener("click", () => {
+          const inp = r.querySelector("#f-password");
+          inp.type = inp.type === "password" ? "text" : "password";
+        });
+      }
       typeSel.addEventListener("change", () => {
         const isHotp = typeSel.value === "hotp";
         r.querySelector("#f-period-wrap").classList.toggle("hidden", isHotp);
@@ -162,6 +176,13 @@ export function openEditModal(item, { onSubmit } = {}) {
       <div class="field mt-2">
         <label>账号 <span class="muted">（可选）</span></label>
         <input id="f-account" class="input" value="${escapeAttr(initial.account)}" />
+      </div>
+      <div class="field mt-2">
+        <label>密码 <span class="muted">（可选）</span></label>
+        <div class="input-with-toggle">
+          <input id="f-password" class="input" type="password" value="${escapeAttr(initial.password)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <button type="button" class="toggle" data-toggle-password>👁</button>
+        </div>
       </div>
 
       <details class="mt-3" id="adv" open>
@@ -212,6 +233,13 @@ export function openEditModal(item, { onSubmit } = {}) {
     `,
     onMount: (r, doClose) => {
       const typeSel = r.querySelector("#f-type");
+      const passwordToggle = r.querySelector("[data-toggle-password]");
+      if (passwordToggle) {
+        passwordToggle.addEventListener("click", () => {
+          const inp = r.querySelector("#f-password");
+          inp.type = inp.type === "password" ? "text" : "password";
+        });
+      }
       typeSel.addEventListener("change", () => {
         const isHotp = typeSel.value === "hotp";
         r.querySelector("#f-period-wrap").classList.toggle("hidden", isHotp);
@@ -239,6 +267,7 @@ function collectManual(r) {
     type,
     issuer: r.querySelector("#f-issuer").value.trim(),
     account: r.querySelector("#f-account").value.trim(),
+    password: r.querySelector("#f-password")?.value ?? "",
     secret,
     algorithm: r.querySelector("#f-algo").value,
     digits: Number(r.querySelector("#f-digits").value || 6),
@@ -266,6 +295,7 @@ function normalizeItem(item) {
     type: item?.type === "hotp" ? "hotp" : "totp",
     issuer: item?.issuer || "",
     account: item?.account || "",
+    password: item?.password || "",
     secret: (item?.secret || "").replace(/\s+/g, "").toUpperCase(),
     algorithm: (item?.algorithm || "SHA1").toUpperCase(),
     digits: Number(item?.digits || 6),
