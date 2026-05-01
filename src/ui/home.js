@@ -151,18 +151,18 @@ function bindCardInteractions(node, item) {
   node.addEventListener("click", async (e) => {
     if (longPressed) { e.preventDefault(); return; }
     if (e.target.closest(".hotp-next")) return;
-    try {
-      const code = await codeForItem(item);
-      const ok = await copyText(code);
-      if (ok) {
-        node.classList.add("copied");
-        setTimeout(() => node.classList.remove("copied"), 400);
-        toast("验证码已复制", "ok");
-      } else {
-        toast("复制失败", "err");
-      }
-    } catch {
-      toast("生成验证码失败", "err");
+    const shown = node.querySelector(".code")?.textContent?.replace(/\s+/g, "") || "";
+    if (!shown || shown === "ERR" || shown.includes("•")) {
+      toast("验证码尚未就绪", "warn");
+      return;
+    }
+    const ok = await copyText(shown);
+    if (ok) {
+      node.classList.add("copied");
+      setTimeout(() => node.classList.remove("copied"), 400);
+      toast("验证码已复制", "ok");
+    } else {
+      toast("复制失败", "err");
     }
   });
 

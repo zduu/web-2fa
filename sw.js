@@ -1,4 +1,4 @@
-const CACHE = '2fa-cache-v4';
+const CACHE = '2fa-cache-v5';
 const ASSETS = [
   '/',
   '/index.html',
@@ -6,10 +6,14 @@ const ASSETS = [
   '/app.js',
   '/shared.html',
   '/shared.js',
-  '/gate.html',
   '/manifest.webmanifest',
-  '/icon.svg',
-  '/icon-maskable.svg',
+  '/assets/icons/apple-touch-icon.png',
+  '/assets/icons/icon-192.png',
+  '/assets/icons/icon-512.png',
+  '/assets/icons/icon-maskable-192.png',
+  '/assets/icons/icon-maskable-512.png',
+  '/assets/icons/icon.svg',
+  '/assets/icons/icon-maskable.svg',
 
   // src/core
   '/src/core/totp.js',

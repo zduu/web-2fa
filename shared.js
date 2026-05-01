@@ -81,7 +81,12 @@ async function main() {
   }
   renderOnce(); setInterval(renderOnce, 1000);
   document.getElementById('copy').addEventListener('click', async () => {
-    try { const code = await totpB32(data.secret, data); const ok = await copyText(code); toast(ok ? '已复制验证码' : '复制失败', ok ? 'ok' : 'err'); } catch { toast('复制失败', 'err'); }
+    try {
+      const shown = document.getElementById('code')?.textContent?.replace(/\s+/g, '') || '';
+      if (!shown || shown === 'ERR') { toast('验证码尚未就绪', 'warn'); return; }
+      const ok = await copyText(shown);
+      toast(ok ? '已复制验证码' : '复制失败', ok ? 'ok' : 'err');
+    } catch { toast('复制失败', 'err'); }
   });
   const copyLinkBtn = document.getElementById('copy-link');
   if (copyLinkBtn) {
@@ -119,11 +124,20 @@ async function copyText(text) {
       const ta = document.createElement('textarea');
       ta.value = String(text);
       ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.width = '1px';
+      ta.style.height = '1px';
+      ta.style.padding = '0';
+      ta.style.border = '0';
       ta.style.opacity = '0';
       ta.style.pointerEvents = 'none';
+      ta.setAttribute('readonly', '');
+      ta.setAttribute('aria-hidden', 'true');
       document.body.appendChild(ta);
       ta.focus();
       ta.select();
+      ta.setSelectionRange(0, ta.value.length);
       const ok = document.execCommand('copy');
       document.body.removeChild(ta);
       return ok;

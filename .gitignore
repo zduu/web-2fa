@@ -9,4 +9,5 @@ wrangler.*.toml
 # Node artifacts
 node_modules/
 .wrangler/
+.claude/
 

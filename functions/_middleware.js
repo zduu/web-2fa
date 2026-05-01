@@ -13,8 +13,7 @@ export const onRequest = async (ctx) => {
     "/shared.js",
     "/api/share/", // GET/HEAD allowed below, writes will be gated
     "/manifest.webmanifest",
-    "/icon.svg",
-    "/icon-maskable.svg",
+    "/assets/icons/",
     "/styles.css",
     "/sw.js",
     "/favicon.ico",
