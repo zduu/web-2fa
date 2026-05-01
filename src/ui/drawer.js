@@ -56,7 +56,7 @@ export function initDrawer(onChange) {
       <button class="close" aria-label="关闭">✕</button>
     </div>
     <nav class="drawer-tabs">
-      <button class="tab active" data-tab="sync">项目</button>
+      <button class="tab admin-only active" data-tab="sync">项目</button>
       <button class="tab" data-tab="data">数据</button>
       <button class="tab admin-only" data-tab="share">分享</button>
       <button class="tab admin-only" data-tab="admin">管理员</button>
@@ -98,7 +98,8 @@ export function openDrawer(initialTab = "sync") {
   // refresh admin flag from session
   state.adminUnlocked = loadAdminUnlocked();
   syncAdminClass();
-  const tab = (!state.adminUnlocked && (initialTab === "share" || initialTab === "admin")) ? "sync" : initialTab;
+  const adminOnlyTabs = new Set(["sync", "share", "admin"]);
+  const tab = (!state.adminUnlocked && adminOnlyTabs.has(initialTab)) ? "data" : initialTab;
   drawer.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
   drawer.querySelectorAll(".drawer-pane").forEach(p => p.classList.toggle("active", p.dataset.pane === tab));
 
@@ -116,7 +117,7 @@ export function closeDrawer() {
 }
 
 function activePaneName() {
-  return drawer.querySelector(".tab.active")?.dataset.tab || "sync";
+  return drawer.querySelector(".tab.active")?.dataset.tab || (state.adminUnlocked ? "sync" : "data");
 }
 
 function renderActivePane() {
@@ -134,6 +135,15 @@ function renderActivePane() {
 // SYNC pane (项目)
 // ===========================================================================
 function renderSyncPane(pane) {
+  if (!state.adminUnlocked) {
+    pane.innerHTML = `
+      <div class="empty-msg">
+        项目与同步仅管理员可用。
+      </div>
+    `;
+    return;
+  }
+
   const dupMap = detectDuplicateSyncIds();
   const projects = listProjects();
   const cur = state.syncProjects.find(p => p.id === state.currentProjectId);
@@ -270,6 +280,10 @@ function renderSyncPane(pane) {
 }
 
 function openProjectEditor(projectId, parentPane) {
+  if (!state.adminUnlocked) {
+    toast("项目与同步仅管理员可用", "warn");
+    return;
+  }
   const proj = projectId ? state.syncProjects.find(p => p.id === projectId) : null;
   const isNew = !proj;
   const { close, root } = openModal({
@@ -592,6 +606,7 @@ function renderAboutPane(pane) {
       unlockAdmin(key);
       syncAdminClass();
       toast("管理员模式已启用", "ok");
+      onChangeCb?.();
       renderAboutPane(pane);
     } else {
       toast(r.msg || "验证失败", "err");
@@ -604,6 +619,7 @@ function renderAboutPane(pane) {
     lockAdmin();
     saveAdminEntryVisible(false);
     syncAdminClass();
+    onChangeCb?.();
     renderAboutPane(pane);
     toast("已退出管理员", "ok");
   });

@@ -259,7 +259,7 @@ export function renderProjectBar(onSelect, onCreate) {
   if (!bar) return;
   bar.innerHTML = "";
 
-  if (state.syncProjects.length === 0) {
+  if (!state.adminUnlocked || state.syncProjects.length === 0) {
     bar.classList.add("hidden");
     return;
   }

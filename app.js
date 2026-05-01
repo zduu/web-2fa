@@ -25,6 +25,7 @@ async function init() {
   state.globalToken = loadGlobalToken();
   state.adminUnlocked = loadAdminUnlocked();
   ensureProjectActive();
+  await normalizeProjectContext();
 
   // sync state.items with currently selected project (in case state was loaded directly)
   if (state.currentProjectId === "_all_") {
@@ -68,24 +69,34 @@ async function init() {
 }
 
 function rerenderAll() {
-  renderProjectBar(async (id) => {
-    await switchToProject(id);
-    rerenderAll();
+  normalizeProjectContext().then(() => {
+    renderProjectBar(async (id) => {
+      await switchToProject(id);
+      rerenderAll();
+    });
+    renderHome();
+    updateStatusBar();
   });
-  renderHome();
-  updateStatusBar();
 }
 
 function bindGlobalEvents() {
   document.getElementById("btn-add").addEventListener("click", openAdd);
   document.getElementById("fab-add").addEventListener("click", openAdd);
-  document.getElementById("btn-settings").addEventListener("click", () => openDrawer("sync"));
+  document.getElementById("btn-settings").addEventListener("click", () => openDrawer(state.adminUnlocked ? "sync" : "data"));
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       // tick will run automatically; nothing extra
     }
   });
+}
+
+async function normalizeProjectContext() {
+  if (state.adminUnlocked) return;
+  if (state.currentProjectId !== "_all_") return;
+  const fallback = state.syncProjects[0];
+  if (!fallback) return;
+  await switchToProject(fallback.id);
 }
 
 // ----- add new account -----
