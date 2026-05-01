@@ -1,4 +1,4 @@
-const CACHE = '2fa-cache-v5';
+const CACHE = '2fa-cache-v10';
 const ASSETS = [
   '/',
   '/index.html',
@@ -19,6 +19,12 @@ const ASSETS = [
   '/src/core/totp.js',
   '/src/core/crypto.js',
   '/src/core/storage.js',
+  '/src/core/version.js',
+  '/src/core/idle.js',
+  '/src/core/password-strength.js',
+  '/src/core/qrdecode.js',
+  // 注意：qrdecode-vendor.js 体积较大（~130KB），仅在不支持原生 BarcodeDetector
+  // 且用户上传图片识别时按需加载，所以不预缓存。fetch 拦截会在首次访问后写入缓存。
 
   // src/sync
   '/src/sync/sync.js',
@@ -39,6 +45,7 @@ const ASSETS = [
   '/src/ui/ring.js',
   '/src/ui/avatar.js',
   '/src/ui/import-export.js',
+  '/src/ui/prefs.js',
 
   // src/admin
   '/src/admin/unlock.js',
@@ -49,7 +56,7 @@ self.addEventListener('install', (e) => {
     const c = await caches.open(CACHE);
     // best-effort: don't fail install if some optional asset is missing
     await Promise.all(ASSETS.map(a => c.add(a).catch(() => {})));
-    self.skipWaiting();
+    // 8.1：不再 skipWaiting；让前端决定何时切换到新版本
   })());
 });
 
@@ -59,6 +66,10 @@ self.addEventListener('activate', (e) => {
     await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
     self.clients.claim();
   })());
+});
+
+self.addEventListener('message', (e) => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (e) => {

@@ -8,18 +8,26 @@ import { initHome, renderHome, renderProjectBar, startTicker, setCardActions } f
 import { initDrawer, openDrawer } from "./src/ui/drawer.js";
 import { openAddModal, openEditModal } from "./src/ui/add.js";
 import { attachScanner } from "./src/ui/scanner.js";
-import { switchToProject, ensureProjectActive, saveCurrentProjectItems } from "./src/sync/projects.js";
-import { startAutoSync, scheduleAutoPush, pullCurrent, pushProject } from "./src/sync/sync.js";
+import { switchToProject, ensureProjectActive } from "./src/sync/projects.js";
+import { startAutoSync, scheduleAutoPush, pushProject, stopAutoSync } from "./src/sync/sync.js";
 import { shareItem } from "./src/share/share.js";
 import { toast, copyText } from "./src/ui/toast.js";
 import { confirmDialog, openModal } from "./src/ui/modal.js";
 import { ensureItemDefaults } from "./src/core/storage.js";
+import { startIdleWatcher } from "./src/core/idle.js";
+import { applyDensity } from "./src/ui/prefs.js";
+import { importFromFileHandle } from "./src/ui/import-export.js";
+import { parseOtpAuth, parseOtpAuthMigration } from "./src/core/totp.js";
+import { importFingerprint, normalizeImportedItem } from "./src/core/imports.js";
+import { initTheme } from "./src/ui/theme.js";
 
 const main = document.getElementById("main");
 let dataChangedDebounce = null;
 
 // ----- init -----
 async function init() {
+  initTheme();
+  applyDensity();
   loadSyncProjects();
   load();
   state.globalToken = loadGlobalToken();
@@ -52,7 +60,38 @@ async function init() {
 
   // service worker
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.register("/sw.js").then((reg) => {
+      // 8.1 检测新版本
+      const promptUpdate = (worker) => {
+        if (!worker) return;
+        toast("发现新版本", "ok", 60_000, {
+          action: {
+            label: "刷新",
+            onClick: () => {
+              worker.postMessage("SKIP_WAITING");
+            },
+          },
+        });
+      };
+      if (reg.waiting) promptUpdate(reg.waiting);
+      reg.addEventListener("updatefound", () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener("statechange", () => {
+          if (nw.state === "installed" && navigator.serviceWorker.controller) {
+            promptUpdate(reg.waiting || nw);
+          }
+        });
+      });
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
+      // 每 30 分钟主动检查一次更新
+      setInterval(() => reg.update().catch(() => {}), 30 * 60_000);
+    }).catch(() => {});
   }
 
   // gate check
@@ -64,6 +103,34 @@ async function init() {
 
   // listen to data-changed events from cards (HOTP advance)
   window.addEventListener("data-changed", () => scheduleAutoPush());
+
+  // 6.3 同步状态事件
+  window.addEventListener("sync-failed", (e) => {
+    const d = e.detail || {};
+    toast(`同步失败，${Math.round((d.delay || 0) / 1000)}s 后重试 (${d.attempt}/3)`, "warn", 1800);
+  });
+  window.addEventListener("sync-recovered", () => {
+    toast("同步已恢复", "ok", 1500);
+  });
+  window.addEventListener("sync-give-up", () => {
+    toast("同步多次失败，已放弃自动重试", "err", 3200);
+  });
+
+  // 闲置自动锁定（5.1 + 5.2）
+  startIdleWatcher((reason) => {
+    stopAutoSync();
+    rerenderAll();
+    toast(reason === "hidden" ? "离开过久已锁定" : "闲置已锁定", "warn", 2400);
+  });
+
+  // 时间漂移检测（5.3）
+  detectTimeDrift();
+  // 网络变化重新检测
+  window.addEventListener("online", () => { detectTimeDrift(); updateStatusBar(); });
+  window.addEventListener("offline", updateStatusBar);
+
+  // 8.5 PWA share_target / 直接打开 otpauth 链接
+  handleShareTargetIfAny();
 
   updateStatusBar();
 }
@@ -88,6 +155,90 @@ function bindGlobalEvents() {
     if (document.visibilityState === "visible") {
       // tick will run automatically; nothing extra
     }
+  });
+
+  // 2.2 全局键盘快捷键
+  document.addEventListener("keydown", (e) => {
+    // 输入态不拦截
+    const t = e.target;
+    const isTyping = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+    if (isTyping) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (e.key === "n" || e.key === "N") { e.preventDefault(); openAdd(); }
+    else if (e.key === ",") { e.preventDefault(); openDrawer(state.adminUnlocked ? "sync" : "data"); }
+    else if (e.key === "?") { e.preventDefault(); showShortcuts(); }
+  });
+
+  // 3.3 / 3.4 拖拽文件到页面导入（应用 JSON / Aegis / Bitwarden / andOTP）
+  let dragDepth = 0;
+  const dropZone = document.body;
+  const dropOverlay = ensureDropOverlay();
+  dropZone.addEventListener("dragenter", (e) => {
+    if (!hasJsonFile(e)) return;
+    dragDepth++;
+    e.preventDefault();
+    dropOverlay.classList.add("show");
+  });
+  dropZone.addEventListener("dragover", (e) => {
+    if (!hasJsonFile(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  dropZone.addEventListener("dragleave", (e) => {
+    if (!hasJsonFile(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropOverlay.classList.remove("show");
+  });
+  dropZone.addEventListener("drop", async (e) => {
+    if (!hasJsonFile(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove("show");
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    // 汇总视图只读；其他场景（具体项目 / 访客本地）都允许拖入
+    if (state.currentProjectId === "_all_") {
+      toast("汇总视图为只读，请切换到具体项目再拖入文件", "warn");
+      return;
+    }
+    const ok = await importFromFileHandle(file);
+    if (ok) rerenderAll();
+  });
+}
+
+function hasJsonFile(e) {
+  if (!e.dataTransfer) return false;
+  const types = Array.from(e.dataTransfer.types || []);
+  return types.includes("Files");
+}
+
+function ensureDropOverlay() {
+  let el = document.getElementById("drop-overlay");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "drop-overlay";
+  el.className = "drop-overlay";
+  el.innerHTML = `<div class="drop-hint">📥 释放文件以导入到当前项目</div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
+function showShortcuts() {
+  openModal({
+    title: "键盘快捷键",
+    bodyHtml: `
+      <ul class="shortcuts">
+        <li><kbd>/</kbd> 聚焦搜索框</li>
+        <li><kbd>n</kbd> 新建账号</li>
+        <li><kbd>,</kbd> 打开设置</li>
+        <li><kbd>?</kbd> 显示此帮助</li>
+        <li><kbd>Esc</kbd> 关闭弹窗</li>
+        <li>卡片获得焦点后：<kbd>Enter</kbd> 复制，<kbd>m</kbd> 菜单，<kbd>p</kbd> 置顶切换，<kbd>e</kbd> 编辑</li>
+      </ul>
+    `,
+    footerHtml: `<div class="btn-row right"><button class="btn" data-act="close">好的</button></div>`,
+    onMount: (r, doClose) => r.querySelector('[data-act="close"]').addEventListener("click", doClose),
   });
 }
 
@@ -210,35 +361,6 @@ function buildImportLookup(items) {
   return map;
 }
 
-function normalizeImportedItem(raw) {
-  return ensureItemDefaults({
-    type: raw?.type || "totp",
-    issuer: String(raw?.issuer || "").trim(),
-    account: String(raw?.account || "").trim(),
-    password: typeof raw?.password === "string" ? raw.password : "",
-    secret: raw?.secret || "",
-    algorithm: raw?.algorithm || "SHA1",
-    digits: Number(raw?.digits || 6),
-    period: Number(raw?.period || 30),
-    counter: Number(raw?.counter || 0),
-    deleted: false,
-    updatedAt: Date.now(),
-  });
-}
-
-function importFingerprint(item) {
-  const normalized = ensureItemDefaults(item);
-  return [
-    normalized.type || "totp",
-    String(normalized.secret || "").replace(/\s+/g, "").toUpperCase(),
-    String(normalized.issuer || "").trim(),
-    String(normalized.account || "").trim(),
-    String(normalized.algorithm || "SHA1").toUpperCase(),
-    Number(normalized.digits || 6),
-    normalized.type === "hotp" ? `counter:${Number(normalized.counter || 0)}` : `period:${Number(normalized.period || 30)}`,
-  ].join("|");
-}
-
 function createItemId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -254,15 +376,124 @@ function formatImportResult(stat, actionLabel) {
 
 // ----- card actions -----
 async function handleShare(item) {
-  const ttl = await chooseTtl();
-  if (ttl === "cancel") return;
+  const choice = await chooseTtl();
+  if (!choice || choice.cancel) return;
   try {
-    const r = await shareItem(item, ttl);
-    const ok = await copyText(r.link);
-    toast(ok ? "分享链接已复制" : `已生成：${r.link}`, ok ? "ok" : "warn");
+    const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "");
+    const copied = await copyText(r.link);
+    await showShareLinkDialog({
+      label: `${item.issuer || ""}${item.account ? " · " + item.account : ""}`.trim() || "分享",
+      link: r.link,
+      ttl: choice.ttl,
+      maxAccess: choice.maxAccess || 0,
+      copied,
+      password: choice.password || "",
+      requiresPassword: !!r.requiresPassword,
+    });
   } catch (e) {
     toast(`分享失败${e.status ? "：" + e.status : ""}`, "err");
   }
+}
+
+async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, password, requiresPassword }) {
+  let countdownTimer = null;
+  const expiresAt = typeof ttl === "number" && ttl > 0 ? Date.now() + ttl * 1000 : null;
+  openModal({
+    title: "分享链接已生成",
+    bodyHtml: `
+      <div class="share-result col gap-2">
+        <div class="share-qr-card">
+          <div class="share-qr-stage center" id="share-qr-stage" aria-live="polite">
+            <div class="text-sm muted">二维码生成中…</div>
+          </div>
+        </div>
+        <div class="share-result-meta">
+          <div class="share-result-title" id="share-link-status"></div>
+          <div class="share-result-sub muted" id="share-link-expiry"></div>
+        </div>
+        ${requiresPassword ? `
+          <div class="field">
+            <label for="share-password-value">接收方访问口令</label>
+            <input id="share-password-value" class="input mono" readonly />
+            <div class="hint">链接里不包含这个口令。请通过其他安全渠道单独告诉接收方。</div>
+          </div>
+        ` : ""}
+        <div class="field">
+          <label for="share-link-value">分享链接</label>
+          <input id="share-link-value" class="input mono" readonly />
+        </div>
+      </div>
+    `,
+    footerHtml: `
+      <div class="btn-row between">
+        <button class="btn ghost" data-act="open">打开链接</button>
+        <div class="btn-row right">
+          ${requiresPassword ? '<button class="btn ghost" data-act="copy-password">复制口令</button>' : ""}
+          <button class="btn ghost" data-act="copy">复制链接</button>
+          <button class="btn" data-act="done">完成</button>
+        </div>
+      </div>
+    `,
+    onClose: () => {
+      if (countdownTimer) clearInterval(countdownTimer);
+    },
+    onMount: async (root, close) => {
+      const input = root.querySelector("#share-link-value");
+      const passwordInput = root.querySelector("#share-password-value");
+      const status = root.querySelector("#share-link-status");
+      const expiry = root.querySelector("#share-link-expiry");
+      const qrStage = root.querySelector("#share-qr-stage");
+      if (input) input.value = link;
+      if (passwordInput) passwordInput.value = password;
+      if (status) status.textContent = copied
+        ? `“${label}” 的分享链接已复制，可直接扫码打开`
+        : `“${label}” 的分享链接已生成，可扫码或手动复制`;
+
+      const renderMeta = () => {
+        const parts = [];
+        if (ttl === "perm" || ttl === 0) parts.push("永久有效（高风险）");
+        else if (expiresAt) parts.push(`剩余 ${formatShareCountdown(expiresAt - Date.now())}`);
+        else parts.push("按服务端默认有效期");
+        if (maxAccess > 0) parts.push(`最多 ${maxAccess} 次访问`);
+        if (requiresPassword) parts.push("需访问口令");
+        if (expiry) expiry.textContent = parts.join(" · ");
+      };
+
+      renderMeta();
+      if (expiresAt) countdownTimer = setInterval(renderMeta, 1000);
+
+      root.querySelector('[data-act="copy-password"]')?.addEventListener("click", async () => {
+        const ok = await copyText(password);
+        toast(ok ? "已复制口令" : "复制失败", ok ? "ok" : "err");
+      });
+      root.querySelector('[data-act="copy"]')?.addEventListener("click", async () => {
+        const ok = await copyText(link);
+        toast(ok ? "已复制链接" : "复制失败", ok ? "ok" : "err");
+      });
+      root.querySelector('[data-act="open"]')?.addEventListener("click", () => {
+        window.open(link, "_blank", "noopener,noreferrer");
+      });
+      root.querySelector('[data-act="done"]')?.addEventListener("click", () => close("done"));
+
+      try {
+        const { renderQrSvg } = await import("./src/core/qrgen.js");
+        qrStage.innerHTML = renderQrSvg(link, { pixelSize: 7 });
+        qrStage.querySelector("svg")?.setAttribute("aria-label", "分享链接二维码");
+      } catch {
+        qrStage.innerHTML = '<div class="empty-msg">二维码生成失败，请直接复制链接</div>';
+      }
+    }
+  });
+}
+
+function formatShareCountdown(ms) {
+  if (!(ms > 0)) return "即将过期";
+  const total = Math.ceil(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}小时 ${String(minutes).padStart(2, "0")}分`;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function handleEdit(item) {
@@ -362,6 +593,25 @@ function chooseTtl() {
           <label class="row gap-2"><input type="radio" name="ttl" value="3600" /> <span>1 小时</span></label>
           <label class="row gap-2"><input type="radio" name="ttl" value="86400" /> <span>24 小时</span></label>
           <label class="row gap-2"><input type="radio" name="ttl" value="perm" /> <span>永久（高风险，不推荐）</span></label>
+          <div class="field mt-2">
+            <label>最多访问次数 <span class="muted">（0 = 不限）</span></label>
+            <select id="share-max" class="input">
+              <option value="0">不限</option>
+              <option value="1">1 次（一次性，访问后立即失效）</option>
+              <option value="3">3 次</option>
+              <option value="5">5 次</option>
+              <option value="10">10 次</option>
+            </select>
+          </div>
+          <div class="field mt-2">
+            <label>备注 <span class="muted">（可选，最多 280 字，对方页面可见）</span></label>
+            <textarea id="share-note" class="input" maxlength="280" placeholder="例如：登录 X 网站请用此码"></textarea>
+          </div>
+          <div class="field mt-2">
+            <label>接收方访问口令 <span class="muted">（可选，不填则只靠链接）</span></label>
+            <input id="share-passcode" class="input" type="password" maxlength="128" placeholder="留空表示不设置额外口令" />
+            <div class="hint">设置后，链接本身无法直接打开，需要接收方另行输入这个口令。</div>
+          </div>
         </div>
       `,
       footerHtml: `
@@ -371,9 +621,12 @@ function chooseTtl() {
         </div>
       `,
       onMount: (r, doClose) => {
-        r.querySelector('[data-act="cancel"]').addEventListener("click", () => { doClose(); resolve("cancel"); });
+        r.querySelector('[data-act="cancel"]').addEventListener("click", () => { doClose(); resolve({ cancel: true }); });
         r.querySelector('[data-act="ok"]').addEventListener("click", async () => {
           const v = r.querySelector('input[name="ttl"]:checked')?.value || "default";
+          const note = (r.querySelector("#share-note")?.value || "").trim();
+          const maxAccess = Number(r.querySelector("#share-max")?.value || 0) || 0;
+          const password = (r.querySelector("#share-passcode")?.value || "").trim();
           if (v === "perm") {
             const ok = await confirmDialog({
               title: "确认永久分享？",
@@ -384,12 +637,13 @@ function chooseTtl() {
             if (!ok) return;
           }
           doClose();
-          resolve(v === "default" ? null : (v === "perm" ? "perm" : Number(v)));
+          const ttl = v === "default" ? null : (v === "perm" ? "perm" : Number(v));
+          resolve({ ttl, note, maxAccess, password });
         });
       }
     });
     root.parentElement.addEventListener("click", (e) => {
-      if (e.target === root.parentElement) resolve("cancel");
+      if (e.target === root.parentElement) resolve({ cancel: true });
     });
   });
 }
@@ -406,6 +660,9 @@ async function handleDelete(item) {
   const isAll = state.currentProjectId === "_all_";
   let shareRevoke = { attempted: 0, revoked: 0, failed: [] };
 
+  // 记录撤销快照
+  let undoSnapshot = null;
+
   if (isAll) {
     // mark deleted in source project
     const proj = state.syncProjects.find(p => p.id === item._projectId);
@@ -413,6 +670,12 @@ async function handleDelete(item) {
     if (!Array.isArray(proj.itemsData)) proj.itemsData = [];
     const target = proj.itemsData.find(x => x.id === item.id);
     if (target) {
+      undoSnapshot = {
+        scope: "all",
+        projectId: proj.id,
+        itemId: item.id,
+        prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: Array.isArray(target.shares) ? target.shares.map(s => (typeof s === "string" ? { sid: s } : { ...s })) : [] },
+      };
       target.deleted = true;
       target.updatedAt = Date.now();
     }
@@ -422,6 +685,11 @@ async function handleDelete(item) {
   } else {
     const target = state.items.find(x => x.id === item.id);
     if (!target) return;
+    undoSnapshot = {
+      scope: "current",
+      itemId: item.id,
+      prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: Array.isArray(target.shares) ? target.shares.map(s => (typeof s === "string" ? { sid: s } : { ...s })) : [] },
+    };
     target.deleted = true;
     target.updatedAt = Date.now();
     shareRevoke = await revokeAllShares(target);
@@ -431,12 +699,40 @@ async function handleDelete(item) {
   }
   rerenderAll();
   scheduleAutoPush();
+
+  // 撤销动作（不能恢复已撤销的远端 share，但可以恢复 deleted 标志）
+  const doUndo = async () => {
+    try {
+      if (undoSnapshot.scope === "all") {
+        const proj = state.syncProjects.find(p => p.id === undoSnapshot.projectId);
+        const target = proj?.itemsData?.find(x => x.id === undoSnapshot.itemId);
+        if (target) {
+          target.deleted = undoSnapshot.prev.deleted;
+          target.updatedAt = undoSnapshot.prev.updatedAt || Date.now();
+        }
+        saveSyncProjects();
+      } else {
+        const target = state.items.find(x => x.id === undoSnapshot.itemId);
+        if (target) {
+          target.deleted = undoSnapshot.prev.deleted;
+          target.updatedAt = undoSnapshot.prev.updatedAt || Date.now();
+        }
+        await persist();
+        const cur = getCurrentProject();
+        if (cur) { cur.itemsData = state.items.map(x => ({ ...x })); saveSyncProjects(); }
+      }
+      rerenderAll();
+      scheduleAutoPush();
+      toast("已恢复（注意：已撤销的分享链接无法恢复）", "ok", 2400);
+    } catch (e) { toast("撤销失败：" + (e.message || e), "err"); }
+  };
+
   if (shareRevoke.failed.length) {
-    toast(`账户已删除，但 ${shareRevoke.failed.length}/${shareRevoke.attempted} 个分享撤销失败，请到“分享”页检查`, "warn", 3200);
+    toast(`已删除，但 ${shareRevoke.failed.length}/${shareRevoke.attempted} 个分享撤销失败`, "warn", 4000, { action: undoSnapshot ? { label: "撤销", onClick: doUndo } : undefined });
   } else if (shareRevoke.revoked > 0) {
-    toast(`已删除，并撤销 ${shareRevoke.revoked} 个分享`, "ok");
+    toast(`已删除（同时撤销 ${shareRevoke.revoked} 个分享）`, "ok", 4000, { action: undoSnapshot ? { label: "撤销", onClick: doUndo } : undefined });
   } else {
-    toast("已删除", "ok");
+    toast("已删除", "ok", 4000, { action: undoSnapshot ? { label: "撤销", onClick: doUndo } : undefined });
   }
 }
 
@@ -464,6 +760,8 @@ async function revokeAllShares(item) {
 }
 
 // ----- status bar (top-right indicators) -----
+let timeDriftSec = 0;
+
 function updateStatusBar() {
   const bar = document.getElementById("status-bar");
   const dot = document.getElementById("status-dot");
@@ -481,9 +779,11 @@ function updateStatusBar() {
   else if (state.currentProjectId === "_all_") parts.push("汇总视图");
   else if (cur) parts.push(cur.name || "项目");
   if (isAdmin) parts.push("管理员");
+  if (typeof navigator !== "undefined" && navigator.onLine === false) parts.push("离线");
+  if (Math.abs(timeDriftSec) >= 15) parts.push(`时间偏差 ${timeDriftSec > 0 ? "+" : ""}${timeDriftSec}s`);
 
   txt.textContent = parts.join(" · ");
-  dot.className = "dot" + (state.unlocked ? "" : " warn");
+  dot.className = "dot" + (state.unlocked ? "" : " warn") + (Math.abs(timeDriftSec) >= 15 ? " warn" : "");
 
   bar.classList.remove("hidden");
 
@@ -492,6 +792,29 @@ function updateStatusBar() {
     sub.textContent = hasProject
       ? (state.currentProjectId === "_all_" ? "全部汇总（只读）" : (cur?.name || "本地"))
       : "本地存储 · 离线可用";
+  }
+}
+
+// 5.3 启动时检测系统时间漂移：用 HEAD / 的 Date 头与 Date.now() 对比
+async function detectTimeDrift() {
+  try {
+    const t0 = Date.now();
+    const res = await fetch("/", { method: "HEAD", cache: "no-store" });
+    const t1 = Date.now();
+    const dateHeader = res.headers.get("Date");
+    if (!dateHeader) return;
+    const serverMs = Date.parse(dateHeader);
+    if (!Number.isFinite(serverMs)) return;
+    // 修正请求往返：服务器 Date 大致对应 t0..t1 中点
+    const localMid = (t0 + t1) / 2;
+    const driftMs = localMid - serverMs;
+    timeDriftSec = Math.round(driftMs / 1000);
+    if (Math.abs(timeDriftSec) >= 30) {
+      toast(`系统时间偏差 ${timeDriftSec > 0 ? "+" : ""}${timeDriftSec}s，验证码可能无效，请校准系统时间`, "warn", 4500);
+    }
+    updateStatusBar();
+  } catch {
+    // 忽略，离线状态下不可用
   }
 }
 
@@ -540,6 +863,37 @@ function showGateModal() {
       r.querySelector('[data-act="ok"]').addEventListener("click", submit);
     }
   });
+}
+
+// 8.5 处理 share_target / otpauth URL 参数
+async function handleShareTargetIfAny() {
+  const params = new URLSearchParams(location.search);
+  const candidates = [params.get("text"), params.get("url"), params.get("title")].filter(Boolean);
+  let items = [];
+  for (const raw of candidates) {
+    if (raw.startsWith("otpauth://")) {
+      const it = parseOtpAuth(raw);
+      if (it && it.secret) items.push(it);
+    } else if (raw.startsWith("otpauth-migration://")) {
+      const arr = parseOtpAuthMigration(raw);
+      if (arr.length) items.push(...arr);
+    }
+  }
+  if (!items.length) return;
+  // 清理 URL 参数（避免刷新重复导入）
+  history.replaceState({}, "", location.pathname);
+  // 等待初始化完成后导入
+  setTimeout(async () => {
+    if (state.currentProjectId === "_all_") {
+      toast("汇总视图为只读，请切换到具体项目再导入", "warn");
+      return;
+    }
+    if (!state.unlocked) {
+      toast("请先解锁本地数据再导入", "warn");
+      return;
+    }
+    await importIntoCurrent(items, "已通过分享导入");
+  }, 100);
 }
 
 // ----- start -----

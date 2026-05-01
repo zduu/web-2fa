@@ -1,144 +1,191 @@
-// Minimal shared code viewer: decrypts data client-side and displays TOTP
+// 共享验证码查看页：从 URL fragment 取密钥 → 拉取密文 → 解密 → 持续渲染
+// 复用 src/core/totp.js 的算法实现，避免与主端不一致
 
-function fromB64url(s) {
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = s.length % 4; if (pad) s += "===".slice(pad);
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-function toB64(arr) { return btoa(String.fromCharCode.apply(null, Array.from(arr))); }
-function base32Decode(input) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const clean = (input || "").toUpperCase().replace(/=+$/g, "").replace(/\s+/g, "");
-  let bits = 0, value = 0; const out = [];
-  for (const c of clean) {
-    const idx = alphabet.indexOf(c); if (idx === -1) continue;
-    value = (value << 5) | idx; bits += 5; if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
-  }
-  return new Uint8Array(out);
-}
-async function hotp(secretBytes, counter, algo = "SHA-1", digits = 6) {
-  const counterBuf = new ArrayBuffer(8); const view = new DataView(counterBuf);
-  const hi = Math.floor(counter / 2 ** 32); const lo = counter >>> 0; view.setUint32(0, hi); view.setUint32(4, lo);
-  const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: { name: algo } }, false, ["sign"]);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, counterBuf));
-  const offset = sig[sig.length - 1] & 0xf;
-  const code = ((sig[offset] & 0x7f) << 24) | ((sig[offset + 1] & 0xff) << 16) | ((sig[offset + 2] & 0xff) << 8) | (sig[offset + 3] & 0xff);
-  const mod = 10 ** digits; return (code % mod).toString().padStart(digits, "0");
-}
-async function totpB32(secretBase32, { algorithm = "SHA1", digits = 6, period = 30 } = {}) {
-  const algo = algorithm.toUpperCase(); const hash = algo === "SHA256" ? "SHA-256" : algo === "SHA512" ? "SHA-512" : "SHA-1";
-  const step = Math.max(5, Number(period) || 30);
-  const counter = Math.floor(Date.now() / 1000 / step);
-  const secretBytes = base32Decode(secretBase32);
-  return hotp(secretBytes, counter, hash, Number(digits) || 6);
-}
-function secondsLeft(period = 30) { const step = Math.max(5, Number(period) || 30); const s = Math.floor(Date.now() / 1000); return step - (s % step); }
-function formatCode(s, digits) { s = String(s || ""); if ((digits || s.length) >= 8 && s.length >= 8) return s.slice(0,4)+" "+s.slice(4,8); if (s.length>=6) return s.slice(0,3)+" "+s.slice(3,6); return s; }
+import { totp, secondsLeft, formatCode } from "./src/core/totp.js";
+import { fromB64url } from "./src/core/crypto.js";
+import { unwrapShareKeyWithPassword } from "./src/core/share-password.js";
+import { initTheme } from "./src/ui/theme.js";
 
 async function decryptPayload(payload, keyB64url) {
-  const iv = fromB64url(payload.iv); const ct = fromB64url(payload.ct);
+  const iv = fromB64url(payload.iv);
+  const ct = fromB64url(payload.ct);
   const raw = fromB64url(keyB64url);
-  const key = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['decrypt']);
-  const pt = new Uint8Array(await crypto.subtle.decrypt({ name:'AES-GCM', iv }, key, ct));
+  const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["decrypt"]);
+  const pt = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
 async function main() {
+  initTheme();
   const params = new URLSearchParams(location.search);
-  const sid = params.get('sid');
-  const frag = new URL(location.href).hash.replace(/^#/, '');
-  const kParam = new URLSearchParams(frag).get('k');
-  if (!sid || !kParam) { document.getElementById('lbl').textContent = '缺少参数'; return; }
+  const sid = params.get("sid");
+  const frag = new URL(location.href).hash.replace(/^#/, "");
+  const fragParams = new URLSearchParams(frag);
+  const kParam = fragParams.get("k");
+  const wrappedKey = fragParams.get("wk")
+    ? {
+        wk: fragParams.get("wk"),
+        iv: fragParams.get("iv"),
+        s: fragParams.get("s"),
+        iter: Number(fragParams.get("iter") || 0) || undefined,
+      }
+    : null;
+  if (!sid || (!kParam && !wrappedKey)) { setLabel("缺少参数"); return; }
+
   const res = await fetch(`/api/share/${encodeURIComponent(sid)}`);
-  if (!res.ok) { document.getElementById('lbl').textContent = '分享不存在或已过期'; return; }
-  let payload; try { payload = await res.json(); } catch { document.getElementById('lbl').textContent = '数据错误'; return; }
-  let data; try { data = await decryptPayload(payload, kParam); } catch { document.getElementById('lbl').textContent = '解密失败'; return; }
-  const label = (data.label || '共享验证码');
-  document.getElementById('lbl').textContent = label;
-  document.getElementById('algo').textContent = `${(data.algorithm||'SHA1').toUpperCase()} · ${data.digits||6}位 · ${data.period||30}s`;
-  const periodInfo = document.getElementById('period-info');
-  if (periodInfo) periodInfo.textContent = `周期 ${data.period||30}s`;
-  async function renderOnce() {
+  if (res.status === 410) { setLabel("分享已达访问上限，已失效"); return; }
+  if (res.status === 404) { setLabel("分享不存在或已过期"); return; }
+  if (!res.ok) { setLabel("分享不存在或已过期"); return; }
+  const remaining = res.headers.get("X-Access-Remaining");
+  let payload;
+  try { payload = await res.json(); } catch { setLabel("数据错误"); return; }
+
+  if (wrappedKey) {
+    showPasswordGate(payload, wrappedKey, remaining);
+    return;
+  }
+
+  let data;
+  try { data = await decryptPayload(payload, kParam); } catch { setLabel("解密失败"); return; }
+  startShareView(data, remaining);
+}
+
+function setLabel(t) { const el = document.getElementById("lbl"); if (el) el.textContent = t; }
+
+function showPasswordGate(payload, wrappedKey, remaining) {
+  const gate = document.getElementById("password-gate");
+  const content = document.getElementById("share-content");
+  const input = document.getElementById("share-pass");
+  const button = document.getElementById("unlock-share");
+  if (gate) gate.style.display = "";
+  if (content) content.style.display = "none";
+  setLabel("需要访问口令");
+  const unlock = async () => {
+    const password = input?.value || "";
+    if (!password.trim()) {
+      toast("请输入访问口令", "warn");
+      input?.focus();
+      return;
+    }
+    if (button) button.disabled = true;
     try {
-      const code = await totpB32(data.secret, data);
-      document.getElementById('code').textContent = formatCode(code, data.digits);
-    } catch { document.getElementById('code').textContent = 'ERR'; }
-    const left = secondsLeft(data.period);
-    document.querySelector('.left').textContent = String(left);
-    const pct = (left / Math.max(5, data.period || 30)) * 100;
-    const bar = document.querySelector('.bar');
-    if (bar) {
-      bar.style.width = pct + '%';
-      bar.style.background = left <= 5
-        ? 'linear-gradient(90deg, #ef4444, #f59e0b)'
-        : left <= 10
-          ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
-          : 'linear-gradient(90deg, var(--ok), var(--primary))';
+      const raw = await unwrapShareKeyWithPassword(wrappedKey, password);
+      const data = await decryptPayload(payload, toB64url(raw));
+      if (gate) gate.style.display = "none";
+      if (content) content.style.display = "";
+      if (input) input.value = "";
+      startShareView(data, remaining);
+      toast("已解锁分享", "ok");
+    } catch {
+      toast("口令错误或链接损坏", "err");
+      input?.focus();
+      input?.select?.();
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+  button?.addEventListener("click", unlock);
+  input?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") unlock();
+  });
+  input?.focus();
+}
+
+function startShareView(data, remaining) {
+  const label = data.label || "共享验证码";
+  setLabel(label);
+  document.getElementById("algo").textContent = `${(data.algorithm || "SHA1").toUpperCase()} · ${data.digits || 6}位 · ${data.period || 30}s`;
+  const periodInfo = document.getElementById("period-info");
+  if (periodInfo) periodInfo.textContent = `周期 ${data.period || 30}s`;
+  if (typeof data.note === "string" && data.note.trim()) {
+    const noteEl = document.getElementById("note");
+    if (noteEl) {
+      noteEl.textContent = data.note;
+      noteEl.style.display = "";
     }
   }
-  renderOnce(); setInterval(renderOnce, 1000);
-  document.getElementById('copy').addEventListener('click', async () => {
-    try {
-      const shown = document.getElementById('code')?.textContent?.replace(/\s+/g, '') || '';
-      if (!shown || shown === 'ERR') { toast('验证码尚未就绪', 'warn'); return; }
-      const ok = await copyText(shown);
-      toast(ok ? '已复制验证码' : '复制失败', ok ? 'ok' : 'err');
-    } catch { toast('复制失败', 'err'); }
-  });
-  const copyLinkBtn = document.getElementById('copy-link');
-  if (copyLinkBtn) {
-    copyLinkBtn.addEventListener('click', async () => {
-      try { const ok = await copyText(location.href); toast(ok ? '已复制链接' : '复制失败', ok ? 'ok' : 'err'); } catch { toast('复制失败', 'err'); }
-    });
+  if (remaining && remaining !== "∞") {
+    const periodInfo2 = document.getElementById("period-info");
+    if (periodInfo2) periodInfo2.textContent = `${periodInfo2.textContent} · 剩余 ${remaining} 次访问`;
   }
+
+  async function renderOnce() {
+    try {
+      const code = await totp(data.secret, data);
+      document.getElementById("code").textContent = formatCode(code, data.digits);
+    } catch {
+      document.getElementById("code").textContent = "ERR";
+    }
+    const left = secondsLeft(data.period);
+    document.querySelector(".left").textContent = String(left);
+    const pct = (left / Math.max(5, data.period || 30)) * 100;
+    const bar = document.querySelector(".bar");
+    if (bar) {
+      bar.style.width = pct + "%";
+      bar.style.background = left <= 5
+        ? "linear-gradient(90deg, #ef4444, #f59e0b)"
+        : left <= 10
+          ? "linear-gradient(90deg, #f59e0b, #fbbf24)"
+          : "linear-gradient(90deg, var(--ok), var(--primary))";
+    }
+  }
+  renderOnce();
+  const ticker = setInterval(renderOnce, 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") renderOnce();
+  });
+  window.addEventListener("beforeunload", () => clearInterval(ticker));
+
+  document.getElementById("copy").addEventListener("click", async () => {
+    const shown = document.getElementById("code")?.textContent?.replace(/\s+/g, "") || "";
+    if (!shown || shown === "ERR") { toast("验证码尚未就绪", "warn"); return; }
+    const ok = await copyText(shown);
+    toast(ok ? "已复制验证码" : "复制失败", ok ? "ok" : "err");
+  }, { once: true });
+  document.getElementById("copy-link")?.addEventListener("click", async () => {
+    const ok = await copyText(location.href);
+    toast(ok ? "已复制链接" : "复制失败", ok ? "ok" : "err");
+  }, { once: true });
+}
+
+function toB64url(bytes) {
+  const bin = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 main();
 
-// Toast helper
 let toastTimer = null;
-function toast(msg, level = 'ok') {
-  const el = document.getElementById('toast');
+function toast(msg, level = "ok") {
+  const el = document.getElementById("toast");
   if (!el) return;
   el.textContent = msg;
-  el.classList.remove('ok','warn','err');
+  el.classList.remove("ok", "warn", "err");
   if (level) el.classList.add(level);
-  el.classList.add('show');
+  el.classList.add("show");
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>{ el.classList.remove('show'); }, 1800);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
 }
 
-// Clipboard fallback (Safari-friendly)
 async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(String(text));
       return true;
     }
-    throw new Error('no-clipboard');
+    throw new Error("no-clipboard");
   } catch {
     try {
-      const ta = document.createElement('textarea');
+      const ta = document.createElement("textarea");
       ta.value = String(text);
-      ta.style.position = 'fixed';
-      ta.style.top = '0';
-      ta.style.left = '0';
-      ta.style.width = '1px';
-      ta.style.height = '1px';
-      ta.style.padding = '0';
-      ta.style.border = '0';
-      ta.style.opacity = '0';
-      ta.style.pointerEvents = 'none';
-      ta.setAttribute('readonly', '');
-      ta.setAttribute('aria-hidden', 'true');
+      ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none;";
+      ta.setAttribute("readonly", "");
+      ta.setAttribute("aria-hidden", "true");
       document.body.appendChild(ta);
       ta.focus();
       ta.select();
       ta.setSelectionRange(0, ta.value.length);
-      const ok = document.execCommand('copy');
+      const ok = document.execCommand("copy");
       document.body.removeChild(ta);
       return ok;
     } catch {

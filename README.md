@@ -15,10 +15,18 @@
 
 - 🚀 **即点即用**：普通用户打开页面即可本地添加 2FA，默认不上传
 - 🔐 **端到端加密同步**：每个项目用 `Sync Secret` 派生 AES-GCM 密钥，云端只存密文
+- 🪪 **Passkey 快捷解锁**：在支持 WebAuthn `prf` 的浏览器中，可把 Passkey 作为本地主密码之外的额外解锁方式
+- ↕️ **项目内拖拽排序**：支持拖拽调整卡片顺序，并在本地持久化保存
+- 🎨 **三档主题**：支持暗色 / 亮色 / 跟随系统，分享页也同步主题色
 - 🛡 **管理员能力默认隐藏**：管理员入口默认不显示，需在“关于”页连续点击版本号 7 次后再输入 `ADMIN_KEY`
-- 🔒 **分享仅管理员可用**：普通用户不显示分享入口，管理员可统一查看全部分享记录
-- 📷 **导入更完整**：支持手动输入、`otpauth://`、Google Authenticator 导出二维码 `otpauth-migration://`
+- 🔒 **分享仅管理员可用**：普通用户不显示分享入口，管理员可统一查看全部分享记录与访问日志
+- 📱 **分享支持离线 QR**：生成链接后会弹出二维码、链接和有效期提示，手机扫码更直接
+- 🔐 **分享口令可选**：可额外设置接收方访问口令；不设置时仍可直接通过链接访问
+- 🔳 **支持批量迁移二维码导出**：当前项目可直接导出为 `otpauth-migration://` 多张二维码，便于迁移到 Google Authenticator 等应用
+- 🧾 **管理员审计日志**：所有 API 写操作会记录最近 30 天的 method/path/status/IP 摘要/UA 摘要
+- 📷 **导入更完整**：支持手动输入、`otpauth://`、`otpauth-migration://`、Aegis 明文 JSON、Bitwarden CSV/JSON、andOTP 加密备份
 - ♻️ **重复导入自动去重**：同一项目重复扫同一个二维码时，会自动跳过；若之前只是“逻辑删除”，会直接恢复
+- ♿ **键盘与对话框可访问性增强**：列表语义、Tab 语义、模态焦点陷阱已补齐
 - 📱 **PWA + 离线**：支持安装到桌面/主屏，断网也能生成验证码
 
 ---
@@ -29,6 +37,9 @@
 打开页面 → 「+」添加账户 → 粘贴密钥或扫描二维码 → 立刻显示验证码。
 
 完全本地（localStorage），无需登录、无需创建任何“项目”，关闭浏览器后数据仍在。点击卡片即可复制验证码，长按或右键可进行编辑、删除、复制 `otpauth` 链接等操作。
+如果你已经启用了主密码，本应用还支持在兼容浏览器里额外绑定一把 Passkey，用生物识别或设备 PIN 快速解锁本地数据。
+如果要从其他验证器迁入，可在「设置 → 数据」里直接导入 Aegis 明文 JSON、Bitwarden CSV/JSON、andOTP 加密备份，或扫描 `otpauth://` / `otpauth-migration://` 二维码。
+如果要迁移到其他支持 Google 批量导入的验证器，可在「设置 → 数据」里使用“批量二维码”导出当前项目。
 
 ### 2. 管理员管理多设备同步
 管理员登录后，设置入口（右上齿轮）→「项目」→「新建项目」，填项目名、Sync ID、Sync Secret 三项即可创建端到端加密的同步空间：
@@ -41,6 +52,9 @@
 进入「关于」页，连续点击版本号 `v0.2.0` 7 次显示高级入口，再输入 `Admin Key` 登录后，才会出现“分享”“管理员”标签页：
 
 - 查看全部分享记录，并统一复制 / 撤销分享
+- 查看分享访问次数、最后访问时间与 User-Agent 摘要
+- 生成分享后立即展示离线二维码、链接与有效期提示；可选再加一层接收方口令
+- 查看最近 30 天 API 写操作审计日志（含拒绝请求）
 - 列出云端所有同步项目（KV `sync:*`）
 - 批量解密预览（可输入多个 `Sync Secret` 尝试）
 - 多格式导出（`otpauth` / JSON / CSV，可按项目分文件 / 仅导出选中）
@@ -124,6 +138,7 @@ PUT    /api/share/:id?ttl=3600  # 创建分享
 DELETE /api/share/:id           # 撤销分享
 
 GET    /api/share/list          # 列出所有分享 SID（需鉴权）
+GET    /api/share/stat          # 获取分享访问统计（需鉴权）
 GET    /api/sharekey/:id        # 获取分享密钥（需鉴权）
 PUT    /api/sharekey/:id        # 存储分享密钥（需鉴权）
 
@@ -131,6 +146,7 @@ GET    /api/vault/:id           # 取出密钥托管密文（需鉴权）
 PUT    /api/vault/:id           # 存放密钥托管密文（需鉴权）
 
 POST   /api/admin/list-all      # 列出所有 sync:* 项目（需鉴权）
+GET    /api/admin/audit         # 获取最近审计日志（需鉴权）
 
 GET    /api/gate                # 检查 ACCESS_GATE
 POST   /api/gate                # 提交访问口令
@@ -157,9 +173,14 @@ web-2fa/
 │   ├── core/
 │   │   ├── totp.js           # TOTP/HOTP/otpauth/migration
 │   │   ├── crypto.js         # AES-GCM/PBKDF2/RSA-OAEP
-│   │   └── storage.js        # localStorage + 主密码加密
+│   │   ├── migration-formats.js # Aegis/Bitwarden/andOTP 迁移格式解析
+│   │   ├── passkey.js        # Passkey PRF / 本地快捷解锁
+│   │   ├── storage.js        # localStorage + 主密码加密
+│   │   ├── qrgen.js          # 分享/导出用离线二维码包装
+│   │   ├── qrgen-vendor.js   # vendored QR encoder
+│   │   └── version.js        # APP_VERSION 单一来源
 │   ├── sync/
-│   │   ├── sync.js           # 推送/拉取/合并/自动同步
+│   │   ├── sync.js           # 推送/拉取/合并/自动同步（页面隐藏自动暂停）
 │   │   ├── projects.js       # 项目 CRUD/切换
 │   │   ├── vault.js          # RSA 托管/找回/迁移
 │   │   └── cloud.js          # 云端浏览/批量解密/导出
@@ -170,23 +191,36 @@ web-2fa/
 │   │   ├── add.js            # 添加面板（Tab 切换）
 │   │   ├── scanner.js        # QR 扫描
 │   │   ├── drawer.js         # 设置抽屉 + 所有面板
+│   │   ├── theme.js          # 主题偏好（dark/light/auto）
 │   │   ├── modal.js          # 模态/Prompt/ActionSheet
 │   │   ├── toast.js          # Toast + 复制/下载
 │   │   ├── ring.js           # SVG 圆形进度环
 │   │   ├── avatar.js         # Issuer 字母头像
-│   │   └── import-export.js  # 导入/导出（含加密包）
+│   │   ├── prefs.js          # 显示密度偏好
+│   │   └── import-export.js  # 导入/导出（含加密包与 migration QR）
 │   └── admin/
 │       └── unlock.js         # 管理员密码校验
 ├── functions/                # Cloudflare Pages Functions
 │   ├── _middleware.js
+│   ├── _lib/
+│   │   ├── auth.js          # 共享鉴权工具（恒时比较 + 多字段兼容）
+│   │   └── audit.js         # API 写请求审计日志
 │   └── api/
+│       ├── health.js
+│       ├── sync-trash.js
+│       ├── sync-backup/[id].js
 │       ├── sync/[id].js
 │       ├── share/[id].js
 │       ├── share/list.js
+│       ├── share/stat.js
 │       ├── sharekey/[id].js
 │       ├── vault/[id].js
 │       ├── gate.js
-│       └── admin/list-all.js
+│       └── admin/
+│           ├── list-all.js
+│           └── audit.js
+├── tests/                    # Vitest 核心算法/合并逻辑测试
+├── .github/workflows/ci.yml  # CI：测试 + Functions 构建
 ├── sw.js                     # Service Worker
 └── manifest.webmanifest
 ```
@@ -197,12 +231,14 @@ web-2fa/
 
 | 维度 | v0.1 | v0.2 |
 |---|---|---|
-| 前端文件 | 单文件 `app.js` 2752 行 | ES Module 化，`src/` 下 19 个模块 |
+| 前端文件 | 单文件 `app.js` 2752 行 | ES Module 化，`src/` 下 17 个模块 |
 | 概念数量 | Server Token / Sync Secret / KV Admin Key / Vault 公私钥 五种 | Admin Key + Sync Secret 两种（旧字段仍兼容） |
 | 默认体验 | 一进来满屏按钮和概念 | 极简：FAB + 齿轮，按需展开 |
 | 隐藏交互 | 三击标题设 Server Token | 「关于」页版本号连点 7 次后显示管理员入口 |
 | 云端可见性 | GET 永远开放 | strict 模式（默认）GET 也鉴权 |
 | 视觉 | 网格 + 线条进度条 | 玻璃拟态 + 圆形 SVG 进度环 + 渐变 |
+| 鉴权代码 | 复制粘贴在多个 endpoint | 抽到 `functions/_lib/auth.js`，恒时比较降低时序攻击面 |
+| 自动同步 | 60s 固定轮询 | 页面隐藏时自动暂停拉取 |
 
 **数据完全兼容**：升级后旧 localStorage 数据自动可用，无需迁移。
 

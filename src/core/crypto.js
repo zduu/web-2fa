@@ -18,12 +18,16 @@ export function b64url(bytes) {
 
 export function fromB64url(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = s.length % 4; if (pad) s += "===".slice(pad);
+  const pad = (4 - (s.length % 4)) % 4;
+  if (pad) s += "=".repeat(pad);
   return fromB64(s);
 }
 
 // ---------- KDF / AES-GCM ----------
-export async function deriveKey(password, salt, iterations = 150000) {
+// 5.12 默认迭代 600k（OWASP 2023 推荐）；旧 meta 中存了 iter 字段则按它解密
+export const KDF_ITERATIONS_DEFAULT = 600_000;
+
+export async function deriveKey(password, salt, iterations = KDF_ITERATIONS_DEFAULT) {
   const enc = new TextEncoder();
   const baseKey = await crypto.subtle.importKey(
     "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
@@ -84,6 +88,18 @@ export async function importRsaPublicKey(pemOrB64) {
     { name: "RSA-OAEP", hash: "SHA-256" },
     false, ["encrypt"]
   );
+}
+
+// 7.3 公钥指纹（SHA-256 取前 16 字节，hex 冒号分隔）
+export async function pemFingerprint(pemOrB64) {
+  try {
+    const buf = decodePemOrB64(pemOrB64);
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+    const slice = hash.slice(0, 16);
+    return Array.from(slice).map(b => b.toString(16).padStart(2, "0")).join(":");
+  } catch {
+    return "";
+  }
 }
 
 export async function importRsaPrivateKey(pemOrB64) {

@@ -44,12 +44,19 @@ export function mergeItems(local, remote) {
 }
 
 // ----- push / pull -----
+function ensureOnline() {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw newErr("当前离线，无法访问云端", "offline");
+  }
+}
+
 export async function pushCurrent() {
   const cur = getCurrentProject();
   if (!cur) throw newErr("请先选择具体项目", "no-project");
   const id = cur.syncId || "";
   const secret = cur.secret || "";
   if (!id || !secret) throw newErr("项目缺少 Sync ID 或 Sync Secret", "missing");
+  ensureOnline();
   const token = getGlobalToken();
   const key = await deriveSyncKey(secret, id);
   const payload = await syncEncrypt({ items: state.items }, key);
@@ -71,6 +78,7 @@ export async function pullCurrent() {
   const id = cur.syncId || "";
   const secret = cur.secret || "";
   if (!id || !secret) throw newErr("项目缺少 Sync ID 或 Sync Secret", "missing");
+  ensureOnline();
   const token = getGlobalToken();
   const key = await deriveSyncKey(secret, id);
   const res = await fetch(getSyncEndpoint(id), {
@@ -96,6 +104,7 @@ export async function pushProject(proj) {
   const id = (proj && proj.syncId) || "";
   const secret = (proj && proj.secret) || "";
   if (!id || !secret) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const token = getGlobalToken();
   const key = await deriveSyncKey(secret, id);
   const payload = await syncEncrypt({ items: proj.itemsData || [] }, key);
@@ -119,20 +128,55 @@ export async function deleteCloudProject(syncId) {
 }
 
 // ----- auto sync scheduler -----
+const AUTO_PULL_INTERVAL_DEFAULT = 60_000;
+const PUSH_RETRY_DELAYS = [2_000, 4_000, 8_000]; // 6.3 指数退避
 let pullTimer = null;
 let pushTimer = null;
+let pushRetry = null;
 let inFlightPush = false;
 let inFlightPull = false;
+let visibilityBound = false;
+
+function getCurrentInterval() {
+  const cur = getCurrentProject();
+  const v = Number(cur?.autoInterval) || 0;
+  if (v >= 5_000 && v <= 24 * 3600_000) return v;
+  return AUTO_PULL_INTERVAL_DEFAULT;
+}
 
 export function startAutoSync() {
   stopAutoSync();
-  // initial pull, then every 60s
-  doPullSafe();
-  pullTimer = setInterval(doPullSafe, 60_000);
+  bindVisibility();
+  if (document.visibilityState === "visible") {
+    doPullSafe();
+    pullTimer = setInterval(doPullSafe, getCurrentInterval());
+  }
 }
 export function stopAutoSync() {
   if (pullTimer) { clearInterval(pullTimer); pullTimer = null; }
   if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+  if (pushRetry) { clearTimeout(pushRetry); pushRetry = null; }
+}
+
+function bindVisibility() {
+  if (visibilityBound) return;
+  visibilityBound = true;
+  document.addEventListener("visibilitychange", () => {
+    const cur = getCurrentProject();
+    if (!cur || !cur.auto) return;
+    if (document.visibilityState === "visible") {
+      if (pullTimer) return;
+      doPullSafe();
+      pullTimer = setInterval(doPullSafe, getCurrentInterval());
+    } else {
+      if (pullTimer) { clearInterval(pullTimer); pullTimer = null; }
+    }
+  });
+  // 6.5 网络恢复后立即拉一次
+  window.addEventListener("online", () => {
+    const cur = getCurrentProject();
+    if (cur && cur.auto && document.visibilityState === "visible") doPullSafe();
+  });
 }
 
 async function doPullSafe() {
@@ -142,16 +186,39 @@ async function doPullSafe() {
   finally { inFlightPull = false; }
 }
 
+// 6.3 自动 push 失败时指数退避重试
+async function attemptPushWithRetry(attempt = 0) {
+  if (inFlightPush) return;
+  inFlightPush = true;
+  try {
+    await pushCurrent();
+    if (attempt > 0) {
+      try { window.dispatchEvent(new CustomEvent("sync-recovered")); } catch {}
+    }
+  } catch (err) {
+    const next = attempt + 1;
+    const delay = PUSH_RETRY_DELAYS[attempt];
+    if (delay && err && err.code !== "no-project" && err.code !== "missing") {
+      try { window.dispatchEvent(new CustomEvent("sync-failed", { detail: { attempt: next, delay, err } })); } catch {}
+      pushRetry = setTimeout(() => {
+        pushRetry = null;
+        inFlightPush = false; // 释放，让 attemptPushWithRetry 进入
+        attemptPushWithRetry(next);
+      }, delay);
+      return;
+    }
+    try { window.dispatchEvent(new CustomEvent("sync-give-up", { detail: { err } })); } catch {}
+  } finally {
+    if (!pushRetry) inFlightPush = false;
+  }
+}
+
 export function scheduleAutoPush() {
   const cur = getCurrentProject();
   if (!cur || !cur.auto) return;
   if (pushTimer) clearTimeout(pushTimer);
-  pushTimer = setTimeout(async () => {
-    if (inFlightPush) return;
-    inFlightPush = true;
-    try { await pushCurrent(); } catch {}
-    finally { inFlightPush = false; }
-  }, 1500);
+  if (pushRetry) { clearTimeout(pushRetry); pushRetry = null; }
+  pushTimer = setTimeout(() => attemptPushWithRetry(0), 1500);
 }
 
 // ----- merge all projects into current -----
