@@ -76,6 +76,7 @@ export function exportDecrypted({ items, format = "otpauth", split = false, sele
         type: it.type || "totp",
         issuer: it.issuer || "",
         account: it.account || "",
+        password: typeof it.password === "string" ? it.password : "",
         secret: (it.secret || "").replace(/\s+/g, "").toUpperCase(),
         algorithm: (it.algorithm || "SHA1").toUpperCase(),
         digits: Number(it.digits || 6),
@@ -98,13 +99,14 @@ export function exportDecrypted({ items, format = "otpauth", split = false, sele
       );
     }
   } else if (format === "csv") {
-    const header = ["type", "issuer", "account", "secret", "algorithm", "digits", "period", "counter", "project", "otpauth"];
+    const header = ["type", "issuer", "account", "password", "secret", "algorithm", "digits", "period", "counter", "project", "otpauth"];
     for (const [key, arr] of Object.entries(groups)) {
       const rows = [header.join(",")].concat(arr.map(it => {
         const cols = [
           it.type || "totp",
           it.issuer || "",
           it.account || "",
+          typeof it.password === "string" ? it.password : "",
           (it.secret || "").replace(/\s+/g, "").toUpperCase(),
           (it.algorithm || "SHA1").toUpperCase(),
           String(Number(it.digits || 6)),
