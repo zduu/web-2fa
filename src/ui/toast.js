@@ -1,4 +1,5 @@
 // 集中的 Toast / 复制 / 通用辅助
+// toast(msg, level, ms, { action: { label, onClick } })
 
 let toastTimer = null;
 let toastEl = null;
@@ -13,15 +14,33 @@ function ensureToast() {
   return toastEl;
 }
 
-export function toast(msg, level = "ok", ms = 1800) {
+export function toast(msg, level = "ok", ms = 1800, opts = {}) {
   const el = ensureToast();
   const ico = level === "ok" ? "✓" : level === "warn" ? "⚠" : level === "err" ? "✕" : "";
-  el.innerHTML = ico ? `<span class="ico">${ico}</span><span>${escapeHtml(msg)}</span>` : escapeHtml(msg);
+  const action = opts && opts.action;
+
+  let html = "";
+  if (ico) html += `<span class="ico">${ico}</span>`;
+  html += `<span class="msg">${escapeHtml(msg)}</span>`;
+  if (action && typeof action.label === "string") {
+    html += `<button class="toast-action" type="button">${escapeHtml(action.label)}</button>`;
+  }
+  el.innerHTML = html;
   el.classList.remove("ok", "warn", "err");
   if (level) el.classList.add(level);
   el.classList.add("show");
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("show"), ms);
+
+  if (action && typeof action.onClick === "function") {
+    const btn = el.querySelector(".toast-action");
+    btn?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      try { action.onClick(); } catch (e) { console.error(e); }
+      if (toastTimer) clearTimeout(toastTimer);
+      el.classList.remove("show");
+    }, { once: true });
+  }
 }
 
 export async function copyText(text) {
@@ -35,15 +54,7 @@ export async function copyText(text) {
     try {
       const ta = document.createElement("textarea");
       ta.value = String(text);
-      ta.style.position = "fixed";
-      ta.style.top = "0";
-      ta.style.left = "0";
-      ta.style.width = "1px";
-      ta.style.height = "1px";
-      ta.style.padding = "0";
-      ta.style.border = "0";
-      ta.style.opacity = "0";
-      ta.style.pointerEvents = "none";
+      ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none;";
       ta.setAttribute("readonly", "");
       ta.setAttribute("aria-hidden", "true");
       document.body.appendChild(ta);

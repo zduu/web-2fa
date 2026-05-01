@@ -3,11 +3,15 @@
 
 import { state, getCurrentProject, getGlobalToken, saveSyncProjects, persist } from "../core/storage.js";
 import { b64url } from "../core/crypto.js";
+import { wrapShareKeyWithPassword } from "../core/share-password.js";
 import { pushProject } from "../sync/sync.js";
 
 export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   if ((item.type || "totp") !== "totp") throw new Error("仅支持分享 TOTP");
 
+  const note = typeof meta.note === "string" ? meta.note.slice(0, 280) : "";
+  const maxAccess = Number(meta.maxAccess) > 0 ? Math.floor(Number(meta.maxAccess)) : 0;
+  const password = typeof meta.password === "string" ? meta.password.trim() : "";
   const payloadObj = {
     type: "totp",
     secret: (item.secret || "").replace(/\s+/g, "").toUpperCase(),
@@ -15,6 +19,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
     digits: Number(item.digits || 6),
     period: Number(item.period || 30),
     label: `${item.issuer || ""}${item.account ? (" · " + item.account) : ""}`.trim(),
+    note,
   };
   const pt = new TextEncoder().encode(JSON.stringify(payloadObj));
   const keyRaw = crypto.getRandomValues(new Uint8Array(32));
@@ -25,10 +30,23 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const sidBytes = crypto.getRandomValues(new Uint8Array(12));
   const sid = b64url(sidBytes);
   const body = JSON.stringify({ v: 1, iv: b64url(iv), ct: b64url(ct) });
+  let protectedBundle = null;
+  const fragment = new URLSearchParams();
+  if (password) {
+    protectedBundle = await wrapShareKeyWithPassword(keyRaw, password);
+    fragment.set("s", protectedBundle.s);
+    fragment.set("iv", protectedBundle.iv);
+    fragment.set("wk", protectedBundle.wk);
+    fragment.set("iter", String(protectedBundle.iter));
+  } else {
+    fragment.set("k", b64url(keyRaw));
+  }
 
-  let qs = "";
-  if (ttlSeconds === "perm" || ttlSeconds === 0) qs = "?ttl=perm";
-  else if (Number.isFinite(Number(ttlSeconds)) && Number(ttlSeconds) > 0) qs = `?ttl=${Math.round(Number(ttlSeconds))}`;
+  const qsParts = [];
+  if (ttlSeconds === "perm" || ttlSeconds === 0) qsParts.push("ttl=perm");
+  else if (Number.isFinite(Number(ttlSeconds)) && Number(ttlSeconds) > 0) qsParts.push(`ttl=${Math.round(Number(ttlSeconds))}`);
+  if (maxAccess > 0) qsParts.push(`max=${maxAccess}`);
+  const qs = qsParts.length ? "?" + qsParts.join("&") : "";
 
   const headers = { "Content-Type": "application/json" };
   const token = getGlobalToken();
@@ -53,17 +71,20 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
           account: item.account || "",
           createdAt,
           ttl: ttlSeconds === null ? "default" : ttlSeconds,
+          maxAccess,
+          requiresPassword: !!password,
+          protectedBundle: protectedBundle || null,
         })
       });
     }
   } catch {}
 
-  const link = `${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#k=${b64url(keyRaw)}`;
-  return { link, sid, k: b64url(keyRaw) };
+  const link = `${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
+  return { link, sid, k: b64url(keyRaw), requiresPassword: !!password };
 }
 
 // Share an item that is currently visible (handles both single-project and "_all_" view)
-export async function shareItem(item, ttlSeconds) {
+export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "") {
   const isAll = state.currentProjectId === "_all_";
   const target = isAll
     ? findItemInProject(item._projectId, item.id)
@@ -77,6 +98,9 @@ export async function shareItem(item, ttlSeconds) {
     projectName,
     itemId: item.id,
     createdAt,
+    note,
+    maxAccess,
+    password,
   });
   // Write share record back to source
   if (target) {
@@ -172,6 +196,31 @@ export async function fetchCloudShares() {
   return Array.isArray(data.sids) ? data.sids : [];
 }
 
+export async function fetchCloudShareStats(sids = []) {
+  const token = getGlobalToken();
+  if (!token) throw new Error("需要 Admin Key");
+  const params = new URLSearchParams();
+  for (const sid of sids) {
+    if (sid) params.append("sid", sid);
+  }
+  const qs = params.toString();
+  const res = await fetch(`/api/share/stat${qs ? `?${qs}` : ""}`, {
+    headers: { "X-Token": token, "Cache-Control": "no-store" }
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json().catch(() => ({ items: [] }));
+  const map = new Map();
+  for (const item of Array.isArray(data.items) ? data.items : []) {
+    if (!item || typeof item.sid !== "string") continue;
+    map.set(item.sid, {
+      accessCount: Math.max(0, Number(item.accessCount || 0)),
+      lastAccessAt: Number(item.lastAccessAt || 0) || null,
+      accessUserAgentSample: typeof item.accessUserAgentSample === "string" ? item.accessUserAgentSample : "",
+    });
+  }
+  return map;
+}
+
 export async function fetchSharedMeta(sid) {
   const token = getGlobalToken();
   if (!token) return null;
@@ -192,6 +241,13 @@ export async function fetchSharedMeta(sid) {
       account: typeof j.account === "string" ? j.account : "",
       createdAt: Number(j.createdAt || 0) || null,
       ttl: j.ttl ?? null,
+      requiresPassword: !!j.requiresPassword,
+      protectedBundle: j.protectedBundle && typeof j.protectedBundle === "object" ? {
+        s: typeof j.protectedBundle.s === "string" ? j.protectedBundle.s : "",
+        iv: typeof j.protectedBundle.iv === "string" ? j.protectedBundle.iv : "",
+        wk: typeof j.protectedBundle.wk === "string" ? j.protectedBundle.wk : "",
+        iter: Number(j.protectedBundle.iter || 0) || null,
+      } : null,
     };
   } catch {
     return null;
@@ -200,9 +256,14 @@ export async function fetchSharedMeta(sid) {
 
 export async function fetchCloudShareRecords() {
   const sids = await fetchCloudShares();
+  const stats = await fetchCloudShareStats(sids);
   const records = await Promise.all(sids.map(async (sid) => {
     const meta = await fetchSharedMeta(sid);
-    return meta || { sid, k: null, label: "分享", projectName: "", itemId: "", issuer: "", account: "", createdAt: null, ttl: null };
+    const stat = stats.get(sid) || { accessCount: 0, lastAccessAt: null, accessUserAgentSample: "" };
+    return {
+      ...(meta || { sid, k: null, label: "分享", projectName: "", itemId: "", issuer: "", account: "", createdAt: null, ttl: null, requiresPassword: false, protectedBundle: null }),
+      ...stat,
+    };
   }));
   records.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0) || a.sid.localeCompare(b.sid));
   return records;

@@ -133,6 +133,16 @@ export function buildOtpAuthUrl(item) {
 }
 
 // ---------- otpauth-migration (protobuf) ----------
+function toB64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function bytesToB64url(bytes) {
+  return toB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 function fromB64(b64) {
   const bin = atob(b64 || "");
   const out = new Uint8Array(bin.length);
@@ -142,8 +152,36 @@ function fromB64(b64) {
 
 function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = s.length % 4; if (pad) s += "===".slice(pad);
+  const pad = (4 - (s.length % 4)) % 4;
+  if (pad) s += "=".repeat(pad);
   return fromB64(s);
+}
+
+function encodeVarint(value) {
+  let current = BigInt(Math.max(0, Number(value || 0)));
+  const out = [];
+  while (current >= 0x80n) {
+    out.push(Number((current & 0x7fn) | 0x80n));
+    current >>= 7n;
+  }
+  out.push(Number(current));
+  return out;
+}
+
+function encodeKey(tag, wireType) {
+  return encodeVarint((tag << 3) | wireType);
+}
+
+function encodeBytesField(tag, bytes) {
+  return [...encodeKey(tag, 2), ...encodeVarint(bytes.length), ...bytes];
+}
+
+function encodeStringField(tag, text) {
+  return encodeBytesField(tag, new TextEncoder().encode(String(text || "")));
+}
+
+function encodeVarintField(tag, value) {
+  return [...encodeKey(tag, 0), ...encodeVarint(value)];
 }
 
 function readVarint(buf, p) {
@@ -211,6 +249,102 @@ function parseMigrationPayload(buf) {
     else break;
   }
   return items;
+}
+
+function normalizeMigrationAlgorithm(value) {
+  const algo = String(value || "SHA1").toUpperCase();
+  if (algo === "SHA256") return 2;
+  if (algo === "SHA512") return 3;
+  return 1;
+}
+
+function normalizeMigrationDigits(value) {
+  return Number(value || 6) >= 8 ? 2 : 1;
+}
+
+function normalizeMigrationType(value) {
+  return String(value || "totp").toLowerCase() === "hotp" ? 1 : 2;
+}
+
+export function buildMigrationPayload(items = [], opts = {}) {
+  const {
+    version = 1,
+    batchSize = 1,
+    batchIndex = 0,
+    batchId = 0,
+  } = opts || {};
+
+  const payload = [];
+  for (const raw of Array.isArray(items) ? items : []) {
+    if (!raw || raw.deleted) continue;
+    const secret = String(raw.secret || "").replace(/\s+/g, "").toUpperCase();
+    const secretBytes = base32Decode(secret);
+    if (!secretBytes.length) continue;
+    const otp = [
+      ...encodeBytesField(1, secretBytes),
+      ...encodeStringField(2, raw.account || ""),
+      ...encodeStringField(3, raw.issuer || ""),
+      ...encodeVarintField(4, normalizeMigrationAlgorithm(raw.algorithm)),
+      ...encodeVarintField(5, normalizeMigrationDigits(raw.digits)),
+      ...encodeVarintField(6, normalizeMigrationType(raw.type)),
+    ];
+    if (normalizeMigrationType(raw.type) === 1) {
+      otp.push(...encodeVarintField(7, Number(raw.counter || 0)));
+    }
+    payload.push(...encodeBytesField(1, otp));
+  }
+  if (!payload.length) return "";
+
+  // Google Authenticator 协议必需的 batch 元数据：
+  //   version       (tag 2): 协议版本，固定 1
+  //   batch_size    (tag 3): 总分片数（>=1），缺失时 GA 报"出了点问题"
+  //   batch_index   (tag 4): 当前分片下标（从 0 起）
+  //   batch_id      (tag 5): 同一次导出的所有分片共享的随机 int32 标识
+  payload.push(...encodeVarintField(2, Math.max(1, Number(version) || 1)));
+  payload.push(...encodeVarintField(3, Math.max(1, Number(batchSize) || 1)));
+  payload.push(...encodeVarintField(4, Math.max(0, Number(batchIndex) || 0)));
+  payload.push(...encodeVarintField(5, Math.max(0, Number(batchId) || 0)));
+  // Google 自己的导出使用标准 base64（带 padding），URL 中再做 percent-encoding。
+  // 部分 GA 版本对 URL-safe base64（-/_、无 padding）不兼容。
+  return toB64(new Uint8Array(payload));
+}
+
+export function buildMigrationUrl(items = [], opts = {}) {
+  const data = buildMigrationPayload(items, opts);
+  if (!data) return "";
+  // 必须 percent-encode：标准 base64 含 +/= 字符，
+  // 直接拼到 URL 会被解析端误读（+ 在 query 中表示空格）。
+  return `otpauth-migration://offline?data=${encodeURIComponent(data)}`;
+}
+
+export function buildMigrationUrls(items = [], chunkSize = 10) {
+  const list = Array.isArray(items) ? items.filter((it) => it && !it.deleted && it.secret) : [];
+  const size = Math.max(1, Math.min(10, Number(chunkSize || 10)));
+  const totalBatches = Math.max(1, Math.ceil(list.length / size));
+  // 同一次导出的所有分片共享同一个 batch_id，让 Google Authenticator 把它们识别为一组。
+  const batchId = generateBatchId();
+  const out = [];
+  for (let i = 0; i < list.length; i += size) {
+    const url = buildMigrationUrl(list.slice(i, i + size), {
+      version: 1,
+      batchSize: totalBatches,
+      batchIndex: Math.floor(i / size),
+      batchId,
+    });
+    if (url) out.push(url);
+  }
+  return out;
+}
+
+function generateBatchId() {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    // 保持非负 int32，protobuf int32 范围 [-2^31, 2^31-1]，
+    // 取低 31 位即可，与 Google 自己生成的 batch_id 范围一致。
+    return buf[0] & 0x7fffffff;
+  }
+  return Math.floor(Math.random() * 0x7fffffff);
 }
 
 export function parseOtpAuthMigration(uriOrData) {

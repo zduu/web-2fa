@@ -18,7 +18,7 @@
 - 解锁后整个会话内有效（管理员模式 sessionStorage 标志）
 - 忘记可以改服务端环境变量重新设置
 
-> 兼容字段：旧版 `SYNC_TOKEN` 和 `KV_ADMIN_KEY` 仍然有效，与 `ADMIN_KEY` 等价。
+> 兼容字段：旧版 `SYNC_TOKEN` 和 `KV_ADMIN_KEY` 仍然有效，与 `ADMIN_KEY` 等价。所有 endpoint 的鉴权统一在 `functions/_lib/auth.js` 处理，使用恒时比较以降低时序攻击面。
 
 ### 🔐 Sync Secret（每个同步项目独立）
 作用：**端到端加密密钥**。客户端用 `PBKDF2(secret, "sync:" + syncId)` 派生 AES-GCM 256 位密钥，加密整个 items 列表后才上传到云端。
@@ -49,6 +49,8 @@
 - 打开页面 → 加 2FA → 看验证码 → 关闭浏览器后数据仍在
 - 数据**只在浏览器 localStorage**，不会上传任何服务端
 - 完全离线可用，PWA 装到主屏
+
+> 注：如果服务端配置了 `ACCESS_GATE`，访客需要先通过站点访问口令才能进入页面，但数据本身仍只在本地。
 
 ### 场景 2：你自己多设备同步（推荐配置）
 1. 部署时配 `ADMIN_KEY = "强随机字符串-自己记住"`

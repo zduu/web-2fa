@@ -1,13 +1,18 @@
 {
   "name": "web-2fa-authenticator",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:functions": "wrangler pages functions build functions --project-directory . --outdir .wrangler/pages-functions-build",
+    "ci": "npm test && npm run build:functions",
     "dev": "wrangler pages dev .",
     "dev:https": "wrangler pages dev . --local-protocol https",
     "dev:remote": "wrangler pages dev . --remote"
   },
   "devDependencies": {
+    "vitest": "^4.1.5",
     "wrangler": "^4.87.0"
   }
 }

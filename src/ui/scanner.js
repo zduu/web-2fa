@@ -1,8 +1,14 @@
 // 二维码扫描：摄像头 + 图片文件
-// 使用浏览器原生 BarcodeDetector
+// 摄像头：浏览器原生 BarcodeDetector
+// 图片：原生不可用时回退到 vendored 的 jsQR
 
 import { parseOtpAuth, parseOtpAuthMigration } from "../core/totp.js";
 import { toast } from "./toast.js";
+import {
+  decodeQrFromFile,
+  decodeQrFromSource,
+  isLiveScanSupported,
+} from "../core/qrdecode.js";
 
 let mediaStream = null;
 let scanTimer = null;
@@ -14,14 +20,14 @@ export function attachScanner(rootEl, doCloseModal, onResult) {
   const stopBtn = rootEl.querySelector("#scan-stop");
   const hint = rootEl.querySelector("#scan-hint");
 
-  const supported = "BarcodeDetector" in window;
-  if (!supported) {
-    hint.textContent = "当前浏览器不支持原生二维码识别，请使用 “选择图片” 或 “从链接” 标签。";
-    startBtn.disabled = true;
+  const liveSupported = isLiveScanSupported();
+  if (!liveSupported) {
+    hint.textContent = "当前浏览器不支持原生实时识别，可使用 “选择图片” 上传截图或用 “从链接” 标签粘贴 otpauth。";
+    if (startBtn) startBtn.disabled = true;
   }
 
   async function start() {
-    if (!supported) return;
+    if (!liveSupported) return;
     try {
       const detector = new BarcodeDetector({ formats: ["qr_code"] });
       mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -76,24 +82,18 @@ export function attachScanner(rootEl, doCloseModal, onResult) {
   }
 
   async function fromImage(file) {
-    if (!supported) {
-      toast("浏览器不支持原生识别，请改用 “从链接” 粘贴 otpauth", "warn");
-      return;
-    }
     try {
-      const detector = new BarcodeDetector({ formats: ["qr_code"] });
-      const img = await createImageBitmap(file);
-      const r = await detector.detect(img);
-      if (r && r.length) {
-        if (!handleResult(r[0]?.rawValue || "")) {
-          // not handled but show hint
-        }
-      } else {
+      const txt = await decodeQrFromFile(file);
+      if (!txt) {
         toast("图片中未识别到二维码", "warn");
+        return;
+      }
+      if (!handleResult(txt)) {
+        // handleResult 已经在内部抛出错误提示
       }
     } catch (e) {
       console.error(e);
-      toast("识别失败", "err");
+      toast("识别失败，请换一张更清晰的截图，或改用 “从链接” 粘贴", "err", 3200);
     }
   }
 
@@ -102,16 +102,29 @@ export function attachScanner(rootEl, doCloseModal, onResult) {
   fileInput?.addEventListener("change", (e) => {
     const f = e.target.files?.[0];
     if (f) fromImage(f);
+    // 允许重复选择同一文件
+    try { e.target.value = ""; } catch {}
   });
 
-  // auto start when supported
-  if (supported) start();
+  // 仅当原生实时扫描可用时自动启动摄像头
+  if (liveSupported) start();
 
-  // cleanup on modal close
+  // cleanup when host element leaves the DOM
   const cleanup = () => stop();
-  // Observe DOM removal for cleanup
-  const obs = new MutationObserver(() => {
-    if (!document.body.contains(rootEl)) { cleanup(); obs.disconnect(); }
-  });
-  obs.observe(document.body, { childList: true, subtree: true });
+  if (typeof window.ResizeObserver === "function") {
+    // Use a single requestAnimationFrame loop to detect detach without observing the whole body subtree
+    const check = () => {
+      if (!document.body.contains(rootEl)) { cleanup(); return; }
+      requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  } else {
+    const obs = new MutationObserver(() => {
+      if (!document.body.contains(rootEl)) { cleanup(); obs.disconnect(); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
 }
+
+// 暴露给单元测试（视频/Canvas 源都可用）
+export { decodeQrFromSource };

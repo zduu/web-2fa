@@ -1,15 +1,8 @@
 // List all sync projects in KV (admin function)
-// 鉴权：X-KV-Admin-Key 匹配 KV_ADMIN_KEY，或 X-Token 匹配 ADMIN_KEY/SYNC_TOKEN
+// 鉴权：X-KV-Admin-Key 匹配任一管理员密钥（含 KV_ADMIN_KEY/ADMIN_KEY/SYNC_TOKEN），
+// 或 X-Token 匹配 ADMIN_KEY/SYNC_TOKEN
 
-function isAuthorized(env, request) {
-  const adminKey = request.headers.get('X-KV-Admin-Key');
-  if (env.KV_ADMIN_KEY && adminKey && adminKey === env.KV_ADMIN_KEY) return true;
-  if (env.ADMIN_KEY && adminKey && adminKey === env.ADMIN_KEY) return true;
-  const xToken = request.headers.get('X-Token');
-  if (env.ADMIN_KEY && xToken && xToken === env.ADMIN_KEY) return true;
-  if (env.SYNC_TOKEN && xToken && xToken === env.SYNC_TOKEN) return true;
-  return false;
-}
+import { isAdminAuthed } from "../../_lib/auth.js";
 
 export async function onRequestPost(context) {
   const { env, request } = context;
@@ -17,30 +10,30 @@ export async function onRequestPost(context) {
   if (!env.KV_ADMIN_KEY && !env.ADMIN_KEY) {
     return new Response(JSON.stringify({
       success: false,
-      error: 'No admin key configured on server (ADMIN_KEY or KV_ADMIN_KEY required)'
+      error: "No admin key configured on server (ADMIN_KEY or KV_ADMIN_KEY required)",
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Note': 'admin_key_missing' }
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Note": "admin_key_missing" },
     });
   }
 
-  if (!isAuthorized(env, request)) {
+  if (!isAdminAuthed(env, request)) {
     return new Response(JSON.stringify({
       success: false,
-      error: 'Unauthorized: Invalid or missing admin key'
+      error: "Unauthorized: Invalid or missing admin key",
     }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { "Content-Type": "application/json" },
     });
   }
 
   try {
     const syncProjects = [];
-    let cursor = undefined;
+    let cursor;
     do {
-      const res = await env.AUTH_KV.list({ prefix: 'sync:', cursor });
+      const res = await env.AUTH_KV.list({ prefix: "sync:", cursor });
       for (const k of res.keys) {
-        const syncId = k.name.startsWith('sync:') ? k.name.slice('sync:'.length) : k.name;
+        const syncId = k.name.startsWith("sync:") ? k.name.slice("sync:".length) : k.name;
         const value = await env.AUTH_KV.get(k.name);
         if (!value) continue;
         try {
@@ -64,16 +57,16 @@ export async function onRequestPost(context) {
     return new Response(JSON.stringify({
       success: true,
       total: syncProjects.length,
-      projects: syncProjects
+      projects: syncProjects,
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
     });
   } catch (e) {
-    console.error('Error listing all projects:', e);
-    return new Response(JSON.stringify({ success: false, error: 'Server Error' }), {
+    console.error("Error listing all projects:", e);
+    return new Response(JSON.stringify({ success: false, error: "Server Error" }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Note': 'error' }
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Note": "error" },
     });
   }
 }

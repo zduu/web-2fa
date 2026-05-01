@@ -6,6 +6,21 @@
   <title>2FA Authenticator</title>
   <meta name="theme-color" content="#0a0d12">
   <meta name="description" content="离线优先的 2FA 验证器，支持多设备端到端加密同步。">
+  <script>
+    (() => {
+      try {
+        const pref = localStorage.getItem("authenticator.v1.theme");
+        const theme = pref === "light" || pref === "auto" ? pref : "dark";
+        const resolved = theme === "auto" && window.matchMedia
+          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          : theme;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.themeResolved = resolved;
+        document.documentElement.style.colorScheme = resolved;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "light" ? "#f4f7fb" : "#0a0d12");
+      } catch {}
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
   <link rel="icon" href="assets/icons/icon-512.png" sizes="512x512" type="image/png">
@@ -30,7 +45,7 @@
     </div>
   </header>
 
-  <main id="main"></main>
+  <main id="main" role="main"></main>
 
   <button class="fab" id="fab-add" aria-label="添加账户" title="添加账户">+</button>
 

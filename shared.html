@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>共享验证码</title>
   <meta name="theme-color" content="#0a0d12">
+  <script>
+    (() => {
+      try {
+        const pref = localStorage.getItem("authenticator.v1.theme");
+        const theme = pref === "light" || pref === "auto" ? pref : "dark";
+        const resolved = theme === "auto" && window.matchMedia
+          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          : theme;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.themeResolved = resolved;
+        document.documentElement.style.colorScheme = resolved;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "light" ? "#f4f7fb" : "#0a0d12");
+      } catch {}
+    })();
+  </script>
   <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
   <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
@@ -47,7 +62,7 @@
     }
     .progress-line {
       width: 100%; height: 6px;
-      background: rgba(255, 255, 255, 0.08);
+      background: var(--surface-soft);
       border-radius: 999px; overflow: hidden;
       position: relative;
     }
@@ -82,6 +97,18 @@
         <h2 id="lbl">加载中…</h2>
         <small id="algo"></small>
       </div>
+      <div id="password-gate" class="section-card" style="display:none; margin: 10px 0 14px;">
+        <div class="col gap-2">
+          <div class="text-sm" style="font-weight:600;">此分享额外受访问口令保护</div>
+          <div class="hint" style="line-height:1.7;">链接里不包含口令。请向分享方获取后再解锁；如果没有设置口令，这个区域不会出现。</div>
+          <input id="share-pass" class="input" type="password" placeholder="输入访问口令" autocomplete="current-password" />
+          <div class="actions" style="margin-top:0;">
+            <button class="btn" id="unlock-share">🔓 解锁分享</button>
+          </div>
+        </div>
+      </div>
+      <div id="share-content">
+      <div id="note" class="hint" style="margin: 6px 0 14px; white-space: pre-wrap; display: none;"></div>
       <div id="code" class="code-display">— —</div>
       <div class="progress-line"><div class="bar"></div></div>
       <div class="progress-meta">
@@ -91,6 +118,7 @@
       <div class="actions">
         <button class="btn" id="copy">📋 复制验证码</button>
         <button class="btn ghost" id="copy-link">复制链接</button>
+      </div>
       </div>
     </article>
   </div>
