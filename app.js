@@ -102,44 +102,141 @@ function openAdd() {
   }
   openAddModal({
     onSubmit: async (items) => {
-      for (const raw of items) addToCurrent(raw);
-      await persist();
-      const cur = getCurrentProject();
-      if (cur) { cur.itemsData = state.items.map(x => ({ ...x })); saveSyncProjects(); }
-      scheduleAutoPush();
-      rerenderAll();
-      toast(items.length > 1 ? `已添加 ${items.length} 个账户` : "已添加", "ok");
+      await importIntoCurrent(items, "导入完成");
     },
     onScan: (rootEl, doClose) => {
       attachScanner(rootEl, doClose, async (items) => {
-        for (const raw of items) addToCurrent(raw);
-        await persist();
-        const cur = getCurrentProject();
-        if (cur) { cur.itemsData = state.items.map(x => ({ ...x })); saveSyncProjects(); }
-        scheduleAutoPush();
-        rerenderAll();
-        toast(items.length > 1 ? `已扫码导入 ${items.length} 个账户` : "已扫码导入", "ok");
+        await importIntoCurrent(items, "扫码导入完成");
       });
     }
   });
 }
 
-function addToCurrent(raw) {
-  const item = ensureItemDefaults({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    type: raw.type || "totp",
-    issuer: raw.issuer || "",
-    account: raw.account || "",
-    secret: (raw.secret || "").replace(/\s+/g, "").toUpperCase(),
-    algorithm: (raw.algorithm || "SHA1").toUpperCase(),
-    digits: Number(raw.digits || 6),
-    period: Number(raw.period || 30),
-    counter: Number(raw.counter || 0),
+async function importIntoCurrent(rawItems, actionLabel = "导入完成") {
+  const stat = addManyToCurrent(rawItems);
+  if (stat.added || stat.restored) {
+    await persist();
+    const cur = getCurrentProject();
+    if (cur) {
+      cur.itemsData = state.items.map(x => ({ ...x }));
+      saveSyncProjects();
+    }
+    scheduleAutoPush();
+    rerenderAll();
+  }
+  toast(formatImportResult(stat, actionLabel), (stat.added || stat.restored) ? "ok" : "warn");
+}
+
+function addManyToCurrent(rawItems) {
+  const stat = { added: 0, restored: 0, skipped: 0 };
+  const existing = buildImportLookup(state.items);
+  const batchSeen = new Set();
+
+  for (const raw of rawItems || []) {
+    const normalized = normalizeImportedItem(raw);
+    if (!normalized.secret) {
+      stat.skipped++;
+      continue;
+    }
+
+    const key = importFingerprint(normalized);
+    if (batchSeen.has(key)) {
+      stat.skipped++;
+      continue;
+    }
+    batchSeen.add(key);
+
+    const match = existing.get(key);
+    if (!match) {
+      const item = ensureItemDefaults({
+        ...normalized,
+        id: createItemId(),
+        shares: [],
+      });
+      state.items.push(item);
+      existing.set(key, item);
+      stat.added++;
+      continue;
+    }
+
+    if (match.deleted) {
+      Object.assign(match, normalized, {
+        id: match.id,
+        deleted: false,
+        updatedAt: Date.now(),
+        shares: Array.isArray(match.shares) ? match.shares : [],
+      });
+      existing.set(key, match);
+      stat.restored++;
+      continue;
+    }
+
+    stat.skipped++;
+  }
+
+  return stat;
+}
+
+function buildImportLookup(items) {
+  const map = new Map();
+  for (const item of items || []) {
+    const normalized = ensureItemDefaults(item);
+    const key = importFingerprint(normalized);
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, item);
+      continue;
+    }
+    if (prev.deleted && !item.deleted) {
+      map.set(key, item);
+      continue;
+    }
+    if (prev.deleted === !!item.deleted && Number(item.updatedAt || 0) >= Number(prev.updatedAt || 0)) {
+      map.set(key, item);
+    }
+  }
+  return map;
+}
+
+function normalizeImportedItem(raw) {
+  return ensureItemDefaults({
+    type: raw?.type || "totp",
+    issuer: String(raw?.issuer || "").trim(),
+    account: String(raw?.account || "").trim(),
+    secret: raw?.secret || "",
+    algorithm: raw?.algorithm || "SHA1",
+    digits: Number(raw?.digits || 6),
+    period: Number(raw?.period || 30),
+    counter: Number(raw?.counter || 0),
     deleted: false,
     updatedAt: Date.now(),
-    shares: [],
   });
-  state.items.push(item);
+}
+
+function importFingerprint(item) {
+  const normalized = ensureItemDefaults(item);
+  return [
+    normalized.type || "totp",
+    String(normalized.secret || "").replace(/\s+/g, "").toUpperCase(),
+    String(normalized.issuer || "").trim(),
+    String(normalized.account || "").trim(),
+    String(normalized.algorithm || "SHA1").toUpperCase(),
+    Number(normalized.digits || 6),
+    normalized.type === "hotp" ? `counter:${Number(normalized.counter || 0)}` : `period:${Number(normalized.period || 30)}`,
+  ].join("|");
+}
+
+function createItemId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatImportResult(stat, actionLabel) {
+  const parts = [];
+  if (stat.added) parts.push(`新增 ${stat.added}`);
+  if (stat.restored) parts.push(`恢复 ${stat.restored}`);
+  if (stat.skipped) parts.push(`跳过重复 ${stat.skipped}`);
+  if (!parts.length) parts.push("没有可导入的账户");
+  return `${actionLabel}：${parts.join("，")}`;
 }
 
 // ----- card actions -----
