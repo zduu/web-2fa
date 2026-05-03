@@ -10,3 +10,6 @@ wrangler.*.toml
 node_modules/
 .wrangler/
 dist-local/
+
+# macOS Finder metadata
+**/.DS_Store
