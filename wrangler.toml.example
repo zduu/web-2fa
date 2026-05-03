@@ -19,6 +19,7 @@ kv_namespaces = [
 
 # === 全站访问口令（可选） ===
 # 启用后所有页面/API 需先验证 cookie；与 ADMIN_KEY 相互独立
+# 管理员页只控制是否启用，口令内容始终来自这里
 # ACCESS_GATE = "your-site-password"
 
 # === 分享默认有效期（秒，<=0 表示永久，可选） ===
