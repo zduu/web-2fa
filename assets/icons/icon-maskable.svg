@@ -1,9 +1,44 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="32" fill="#0b0d10"/>
-  <g>
-    <circle cx="64" cy="64" r="36" fill="#2f81f7"/>
-    <path d="M64 32a32 32 0 1032 32" fill="#30a46c" opacity="0.6"/>
-    <text x="64" y="74" font-family="monospace" font-size="40" text-anchor="middle" fill="#e6edf3">2FA</text>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f1228"/>
+      <stop offset="1" stop-color="#1a1240"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="accentBright" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#06b6d4"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#a78bfa" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="128" height="128" fill="url(#bg)"/>
+  <rect width="128" height="128" fill="url(#glow)"/>
+
+  <g transform="translate(64 64) scale(0.8) translate(-64 -64)">
+    <path d="M64 18 C 82 18, 98 22, 106 27 L 106 62 C 106 86, 88 102, 64 110 C 40 102, 22 86, 22 62 L 22 27 C 30 22, 46 18, 64 18 Z"
+          fill="url(#accent)" opacity="0.12"/>
+    <path d="M64 18 C 82 18, 98 22, 106 27 L 106 62 C 106 86, 88 102, 64 110 C 40 102, 22 86, 22 62 L 22 27 C 30 22, 46 18, 64 18 Z"
+          fill="none" stroke="url(#accent)" stroke-width="3" opacity="0.75"/>
+
+    <circle cx="64" cy="62" r="24" fill="none" stroke="#262a52" stroke-width="5"/>
+    <path d="M 64 38 A 24 24 0 1 1 40 62"
+          fill="none" stroke="url(#accentBright)" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="40" cy="62" r="3.2" fill="#a78bfa"/>
+
+    <g fill="url(#accent)">
+      <circle cx="54" cy="58" r="3"/>
+      <circle cx="64" cy="58" r="3"/>
+      <circle cx="74" cy="58" r="3"/>
+      <circle cx="54" cy="68" r="3"/>
+      <circle cx="64" cy="68" r="3"/>
+      <circle cx="74" cy="68" r="3"/>
+    </g>
   </g>
 </svg>
-
