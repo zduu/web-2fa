@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "build:local-web": "node scripts/build-local-web.mjs",
     "build:functions": "wrangler pages functions build functions --project-directory . --outdir .wrangler/pages-functions-build",
     "ci": "npm test && npm run build:functions",
     "dev": "wrangler pages dev .",

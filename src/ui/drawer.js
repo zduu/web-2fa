@@ -27,6 +27,7 @@ import {
   scorePassword, getUnlockBlockMs, recordUnlockFail, clearUnlockFails,
 } from "../core/password-strength.js";
 import { pemFingerprint } from "../core/crypto.js";
+import { canUseCloudApis, isLocalOnlyApp } from "../core/runtime.js";
 
 const moduleCache = {
   share: null,
@@ -157,17 +158,17 @@ export function initDrawer(onChange) {
   backdrop.className = "drawer-backdrop";
 
   drawer = document.createElement("aside");
-  drawer.className = "drawer";
+  drawer.className = "drawer" + (isLocalOnlyApp() ? " local-app" : "");
   drawer.innerHTML = `
     <div class="drawer-head">
       <h2>设置</h2>
       <button class="close" aria-label="关闭">✕</button>
     </div>
     <nav class="drawer-tabs" role="tablist" aria-label="设置分区">
-      <button class="tab admin-only active" id="drawer-tab-sync" role="tab" aria-selected="true" aria-controls="drawer-pane-sync" tabindex="0" data-tab="sync">项目</button>
+      <button class="tab project-tab active" id="drawer-tab-sync" role="tab" aria-selected="true" aria-controls="drawer-pane-sync" tabindex="0" data-tab="sync">项目</button>
       <button class="tab" id="drawer-tab-data" role="tab" aria-selected="false" aria-controls="drawer-pane-data" tabindex="-1" data-tab="data">数据</button>
-      <button class="tab admin-only" id="drawer-tab-share" role="tab" aria-selected="false" aria-controls="drawer-pane-share" tabindex="-1" data-tab="share">分享</button>
-      <button class="tab admin-only" id="drawer-tab-admin" role="tab" aria-selected="false" aria-controls="drawer-pane-admin" tabindex="-1" data-tab="admin">管理员</button>
+      <button class="tab admin-only cloud-only" id="drawer-tab-share" role="tab" aria-selected="false" aria-controls="drawer-pane-share" tabindex="-1" data-tab="share">分享</button>
+      <button class="tab admin-only cloud-only" id="drawer-tab-admin" role="tab" aria-selected="false" aria-controls="drawer-pane-admin" tabindex="-1" data-tab="admin">管理员</button>
       <button class="tab" id="drawer-tab-about" role="tab" aria-selected="false" aria-controls="drawer-pane-about" tabindex="-1" data-tab="about">关于</button>
     </nav>
     <div class="drawer-body">
@@ -215,6 +216,8 @@ export function initDrawer(onChange) {
 }
 
 function syncAdminClass() {
+  if (isLocalOnlyApp()) drawer.classList.add("local-app");
+  else drawer.classList.remove("local-app");
   if (state.adminUnlocked) drawer.classList.add("admin");
   else drawer.classList.remove("admin");
 }
@@ -224,7 +227,9 @@ export function openDrawer(initialTab = "sync") {
   state.adminUnlocked = loadAdminUnlocked();
   syncAdminClass();
   const adminOnlyTabs = new Set(["sync", "share", "admin"]);
-  const tab = (!state.adminUnlocked && adminOnlyTabs.has(initialTab)) ? "data" : initialTab;
+  let tab = initialTab;
+  if ((initialTab === "share" || initialTab === "admin") && !canUseCloudApis()) tab = "sync";
+  else if (!isLocalOnlyApp() && !state.adminUnlocked && adminOnlyTabs.has(initialTab)) tab = "data";
   setDrawerTab(tab);
 
   backdrop.classList.add("show");
@@ -241,7 +246,7 @@ export function closeDrawer() {
 }
 
 function activePaneName() {
-  return drawer.querySelector(".tab.active")?.dataset.tab || (state.adminUnlocked ? "sync" : "data");
+  return drawer.querySelector(".tab.active")?.dataset.tab || (isLocalOnlyApp() || state.adminUnlocked ? "sync" : "data");
 }
 
 function setDrawerTab(tabName) {
@@ -274,7 +279,9 @@ function renderActivePane() {
 // SYNC pane (项目)
 // ===========================================================================
 function renderSyncPane(pane) {
-  if (!state.adminUnlocked) {
+  const localApp = isLocalOnlyApp();
+  const projectEnabled = localApp || state.adminUnlocked;
+  if (!projectEnabled) {
     pane.innerHTML = `
       <div class="empty-msg">
         项目与同步仅管理员可用。
@@ -283,14 +290,14 @@ function renderSyncPane(pane) {
     return;
   }
 
-  const dupMap = detectDuplicateSyncIds();
+  const dupMap = localApp ? new Map() : detectDuplicateSyncIds();
   const projects = listProjects();
   const cur = state.syncProjects.find(p => p.id === state.currentProjectId);
   const isAdmin = !!state.adminUnlocked;
 
   let html = `
     <div class="section">
-      <h3>同步项目</h3>
+      <h3>${localApp ? "本地项目" : "同步项目"}</h3>
       <div class="section-card">
         <div class="row between mb-2">
           <span class="text-sm muted">${projects.length ? `${projects.length} 个项目` : "尚未创建项目"}</span>
@@ -302,24 +309,23 @@ function renderSyncPane(pane) {
 
     ${cur ? `
     <div class="section">
-      <h3>当前项目操作</h3>
+      <h3>${localApp ? "当前项目" : "当前项目操作"}</h3>
       <div class="section-card col gap-2">
         <div class="row between">
           <div>
             <div class="text-sm" style="font-weight:600;">${escapeHtml(cur.name || "未命名")}</div>
-            <div class="text-xs muted mono">${escapeHtml(cur.syncId || "-")}</div>
+            <div class="text-xs muted mono">${escapeHtml(localApp ? "仅本地保存" : (cur.syncId || "-"))}</div>
           </div>
-          <span class="tag ${cur.lastSyncedAt ? "ok" : ""}">${cur.lastSyncedAt ? "上次同步：" + new Date(cur.lastSyncedAt).toLocaleTimeString() : "未同步"}</span>
+          <span class="tag ${cur.lastSyncedAt ? "ok" : ""}">${localApp ? "本地项目" : (cur.lastSyncedAt ? "上次同步：" + new Date(cur.lastSyncedAt).toLocaleTimeString() : "未同步")}</span>
         </div>
         <div class="btn-row">
-          <button class="btn" data-act="push">⬆ 推送</button>
-          <button class="btn ghost" data-act="pull">⬇ 拉取</button>
+          ${localApp ? "" : '<button class="btn" data-act="push">⬆ 推送</button><button class="btn ghost" data-act="pull">⬇ 拉取</button>'}
           <button class="btn ghost" data-act="merge-all">合并所有</button>
         </div>
-        <label class="row gap-2">
+        ${localApp ? '<p class="hint">本地 APK 模式下，项目仅用于本机分类隔离，不连接任何远程服务。</p>' : `<label class="row gap-2">
           <input type="checkbox" id="auto-sync" ${cur.auto ? "checked" : ""}/>
           <span class="text-sm">启用自动同步（保存后自动推送，每 60s 自动拉取）</span>
-        </label>
+        </label>`}
         <button class="btn ghost sm" data-act="edit-current">编辑当前项目</button>
       </div>
     </div>
@@ -329,9 +335,11 @@ function renderSyncPane(pane) {
       <details>
         <summary class="hint" style="cursor:pointer; user-select:none;">概念说明</summary>
         <div class="hint mt-2" style="line-height:1.7;">
-          <p><strong>Sync Secret</strong>：每个项目独立的端到端加密密钥，跨设备必须一致；忘记后无法恢复云端数据。</p>
+          ${localApp
+            ? '<p><strong>本地项目</strong>：每个项目的数据都只保存在当前手机里，用于分类、分库和汇总查看。</p><p><strong>全部汇总视图</strong>：本地虚拟视图，只汇总本机上已有项目的数据。</p>'
+            : `<p><strong>Sync Secret</strong>：每个项目独立的端到端加密密钥，跨设备必须一致；忘记后无法恢复云端数据。</p>
           ${isAdmin ? '<p><strong>Admin Key</strong>：服务端配置的管理员主密钥。在严格模式下，没有 Admin Key 无法读写云端。</p>' : ""}
-          <p><strong>全部汇总视图</strong>：本地虚拟视图，只显示你已创建的项目数据。不会自动拉取云端其他项目。</p>
+          <p><strong>全部汇总视图</strong>：本地虚拟视图，只显示你已创建的项目数据。不会自动拉取云端其他项目。</p>`}
         </div>
       </details>
     </div>
@@ -341,7 +349,7 @@ function renderSyncPane(pane) {
 
   const list = pane.querySelector("#proj-list");
   if (!projects.length) {
-    list.innerHTML = `<div class="empty-msg">点击"新建项目"开始多设备同步</div>`;
+    list.innerHTML = `<div class="empty-msg">${localApp ? '点击"新建项目"开始本地分组管理' : '点击"新建项目"开始多设备同步'}</div>`;
   } else {
     // 全部汇总
     const allLi = document.createElement("div");
@@ -358,13 +366,13 @@ function renderSyncPane(pane) {
 
     for (const p of projects) {
       const isCur = p.id === state.currentProjectId;
-      const dup = p.syncId && dupMap.get(p.syncId) > 1;
+      const dup = !localApp && p.syncId && dupMap.get(p.syncId) > 1;
       const li = document.createElement("div");
       li.className = "list-item" + (isCur ? " active" : "");
       li.innerHTML = `
         <div class="li-info">
           <div class="li-title">${escapeHtml(p.name || "未命名")} ${dup ? '<span class="tag warn">ID 重复</span>' : ""}</div>
-          <div class="li-sub">${escapeHtml(p.syncId || "-")}</div>
+          <div class="li-sub">${escapeHtml(localApp ? "仅本地保存" : (p.syncId || "-"))}</div>
         </div>
         <div class="li-actions">
           ${isCur ? '<span class="tag ok">当前</span>' : `<button class="btn ghost sm" data-switch="${p.id}">切换</button>`}
@@ -384,11 +392,11 @@ function renderSyncPane(pane) {
   }));
 
   if (cur) {
-    pane.querySelector('[data-act="push"]').addEventListener("click", async () => {
+    pane.querySelector('[data-act="push"]')?.addEventListener("click", async () => {
       try { await pushCurrent(); toast("已推送", "ok"); }
       catch (e) { toast(e.message, "err"); }
     });
-    pane.querySelector('[data-act="pull"]').addEventListener("click", async () => {
+    pane.querySelector('[data-act="pull"]')?.addEventListener("click", async () => {
       try { await pullCurrent(); toast("已同步", "ok"); onChangeCb?.(); }
       catch (e) {
         if (e.code === "empty") toast("云端暂无数据", "warn");
@@ -398,17 +406,21 @@ function renderSyncPane(pane) {
     pane.querySelector('[data-act="merge-all"]').addEventListener("click", async () => {
       const ok = await confirmDialog({
         title: "合并所有项目",
-        message: "将本地所有已保存项目的条目合并到当前项目，并推送到云端。继续？",
+        message: localApp
+          ? "将本机所有已保存项目的条目合并到当前项目。继续？"
+          : "将本地所有已保存项目的条目合并到当前项目，并推送到云端。继续？",
       });
       if (!ok) return;
       try {
         const stat = await mergeAllProjectsIntoCurrent();
         toast(`合并完成：${stat.before} → ${stat.after} 条`, "ok");
-        try { await pushCurrent(); toast("已推送", "ok"); } catch {}
+        if (!localApp) {
+          try { await pushCurrent(); toast("已推送", "ok"); } catch {}
+        }
         onChangeCb?.();
       } catch (e) { toast(e.message, "err"); }
     });
-    pane.querySelector("#auto-sync").addEventListener("change", (e) => {
+    pane.querySelector("#auto-sync")?.addEventListener("change", (e) => {
       cur.auto = e.target.checked;
       saveSyncProjects();
       if (cur.auto) startAutoSync(); else stopAutoSync();
@@ -419,15 +431,22 @@ function renderSyncPane(pane) {
 }
 
 function openProjectEditor(projectId, parentPane) {
-  if (!state.adminUnlocked) {
+  const localApp = isLocalOnlyApp();
+  if (!localApp && !state.adminUnlocked) {
     toast("项目与同步仅管理员可用", "warn");
     return;
   }
   const proj = projectId ? state.syncProjects.find(p => p.id === projectId) : null;
   const isNew = !proj;
   const { close, root } = openModal({
-    title: isNew ? "新建同步项目" : "编辑项目",
-    bodyHtml: `
+    title: isNew ? (localApp ? "新建本地项目" : "新建同步项目") : "编辑项目",
+    bodyHtml: localApp ? `
+      <div class="field">
+        <label>项目名称</label>
+        <input id="pe-name" class="input" placeholder="如：个人账号" value="${escapeHtml(proj?.name || "")}" />
+      </div>
+      <div class="hint mt-2">本地 APK 模式下，项目数据仅保存在当前设备，不需要 Sync ID、Secret 或 Admin Key。</div>
+    ` : `
       <div class="field">
         <label>项目名称</label>
         <input id="pe-name" class="input" placeholder="如：个人账号" value="${escapeHtml(proj?.name || "")}" />
@@ -466,35 +485,46 @@ function openProjectEditor(projectId, parentPane) {
       </div>
     `,
     onMount: (r, doClose) => {
-      r.querySelector("[data-toggle]").addEventListener("click", () => {
+      r.querySelector("[data-toggle]")?.addEventListener("click", () => {
         const inp = r.querySelector("#pe-secret");
         inp.type = inp.type === "password" ? "text" : "password";
       });
       r.querySelector('[data-act="cancel"]').addEventListener("click", doClose);
       r.querySelector('[data-act="save"]').addEventListener("click", async () => {
         const name = r.querySelector("#pe-name").value.trim();
-        const syncId = r.querySelector("#pe-id").value.trim();
-        const secret = r.querySelector("#pe-secret").value;
-        const auto = r.querySelector("#pe-auto").checked;
-        const autoInterval = Number(r.querySelector("#pe-interval")?.value) || 60000;
-        if (!name || !syncId || !secret) { toast("请填写名称、Sync ID 和 Secret", "warn"); return; }
-        const dup = state.syncProjects.find(p => p.id !== projectId && (p.syncId || "").trim() === syncId);
-        if (dup) {
-          const ok = await confirmDialog({
-            title: "Sync ID 重复",
-            message: `已有项目 "${dup.name || dup.id}" 使用相同的 Sync ID，继续保存将共用同一云端数据，可能互相覆盖。仍要继续？`,
-            danger: true
-          });
-          if (!ok) return;
-        }
+        if (!name) { toast("请填写项目名称", "warn"); return; }
         let saved;
-        if (proj) {
-          saved = updateProject(projectId, { name, syncId, secret, auto, autoInterval });
+        if (localApp) {
+          if (proj) {
+            saved = updateProject(projectId, { name });
+          } else {
+            saved = createProject({ name });
+          }
         } else {
-          saved = createProject({ name, syncId, secret, auto, autoInterval });
+          const syncId = r.querySelector("#pe-id").value.trim();
+          const secret = r.querySelector("#pe-secret").value;
+          const auto = r.querySelector("#pe-auto").checked;
+          const autoInterval = Number(r.querySelector("#pe-interval")?.value) || 60000;
+          if (!syncId || !secret) { toast("请填写 Sync ID 和 Secret", "warn"); return; }
+          const dup = state.syncProjects.find(p => p.id !== projectId && (p.syncId || "").trim() === syncId);
+          if (dup) {
+            const ok = await confirmDialog({
+              title: "Sync ID 重复",
+              message: `已有项目 "${dup.name || dup.id}" 使用相同的 Sync ID，继续保存将共用同一云端数据，可能互相覆盖。仍要继续？`,
+              danger: true
+            });
+            if (!ok) return;
+          }
+          if (proj) {
+            saved = updateProject(projectId, { name, syncId, secret, auto, autoInterval });
+          } else {
+            saved = createProject({ name, syncId, secret, auto, autoInterval });
+          }
         }
         await switchToProject(saved.id);
-        if (auto) startAutoSync(); else stopAutoSync();
+        if (!localApp) {
+          if (saved.auto) startAutoSync(); else stopAutoSync();
+        }
         doClose();
         renderSyncPane(parentPane);
         onChangeCb?.();
@@ -503,7 +533,9 @@ function openProjectEditor(projectId, parentPane) {
       r.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
         const ok = await confirmDialog({
           title: "删除项目？",
-          message: "本地项目数据会被删除（云端密文不会自动删除，请在管理员面板手动清理）。",
+          message: localApp
+            ? "本地项目数据会从当前设备删除。"
+            : "本地项目数据会被删除（云端密文不会自动删除，请在管理员面板手动清理）。",
           danger: true,
           okText: "删除"
         });
@@ -842,6 +874,14 @@ async function refreshPasskeySupportState(pane, { hasMaster, hasPasskey }) {
 // SHARE pane (分享)
 // ===========================================================================
 async function renderSharePane(pane) {
+  if (!canUseCloudApis()) {
+    pane.innerHTML = `
+      <div class="empty-msg">
+        本地 APK 版未启用云分享。
+      </div>
+    `;
+    return;
+  }
   const isAdmin = !!state.adminUnlocked;
   if (!isAdmin) {
     pane.innerHTML = `
@@ -932,14 +972,15 @@ async function renderSharePane(pane) {
 // ABOUT pane (关于)
 // ===========================================================================
 function renderAboutPane(pane) {
+  const localApp = isLocalOnlyApp();
   const isAdmin = !!state.adminUnlocked;
-  const adminEntryVisible = isAdmin || loadAdminEntryVisible();
+  const adminEntryVisible = !localApp && (isAdmin || loadAdminEntryVisible());
   pane.innerHTML = `
     <div class="section">
       <h3>关于</h3>
       <div class="section-card col gap-2">
         <div class="row between"><span class="text-sm">版本</span><span class="tag" data-act="about-version">v${APP_VERSION}</span></div>
-        <div class="row between"><span class="text-sm">数据存储</span><span class="text-sm muted">localStorage + Cloudflare KV</span></div>
+        <div class="row between"><span class="text-sm">数据存储</span><span class="text-sm muted">${localApp ? "localStorage · 本地 APK" : "localStorage + Cloudflare KV"}</span></div>
       </div>
     </div>
 
@@ -962,15 +1003,15 @@ function renderAboutPane(pane) {
       <details>
         <summary class="hint" style="cursor:pointer; user-select:none;">访客模式 / 数据隐私说明</summary>
         <div class="hint mt-2" style="line-height:1.7;">
-          <p>未启用同步项目时，全部数据只存储在浏览器 localStorage 中，离线可用，不会上传任何信息。</p>
-          <p>启用同步后，本地用 Sync Secret 端到端加密，云端只保存密文。</p>
-          <p>"全部汇总视图"是本地虚拟视图，不会访问其他用户的云端数据。</p>
+          ${localApp
+            ? '<p>本地 APK 版不会连接远程云端。全部账户和项目都只保存在当前手机本地。</p><p>"全部汇总视图"只汇总本机已有项目，不会访问任何远程服务。</p>'
+            : '<p>未启用同步项目时，全部数据只存储在浏览器 localStorage 中，离线可用，不会上传任何信息。</p><p>启用同步后，本地用 Sync Secret 端到端加密，云端只保存密文。</p><p>"全部汇总视图"是本地虚拟视图，不会访问其他用户的云端数据。</p>'}
         </div>
       </details>
     </div>
   `;
 
-  bindAdminEntryReveal(pane, adminEntryVisible);
+  if (!localApp) bindAdminEntryReveal(pane, adminEntryVisible);
 
   pane.querySelector('[data-act="login-admin"]')?.addEventListener("click", async () => {
     const key = await promptDialog({
@@ -1028,6 +1069,14 @@ function bindAdminEntryReveal(pane, alreadyVisible) {
 // ADMIN pane (L3)
 // ===========================================================================
 async function renderAdminPane(pane, renderToken) {
+  if (!canUseCloudApis()) {
+    pane.innerHTML = `
+      <div class="empty-msg">
+        本地 APK 版未启用云端管理功能。
+      </div>
+    `;
+    return;
+  }
   if (!state.adminUnlocked) {
     pane.innerHTML = `
       <div class="empty-msg">

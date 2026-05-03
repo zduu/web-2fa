@@ -9,4 +9,4 @@ wrangler.*.toml
 # Node artifacts
 node_modules/
 .wrangler/
-
+dist-local/

@@ -8,6 +8,7 @@ import { createRing } from "./ring.js";
 import { createAvatar } from "./avatar.js";
 import { toast, copyText, escapeHtml } from "./toast.js";
 import { actionSheet, confirmDialog } from "./modal.js";
+import { isLocalOnlyApp } from "../core/runtime.js";
 
 const cardMap = new Map(); // id -> { node, ring, item }
 let listEl = null;
@@ -471,7 +472,7 @@ function startCopiedBadge(node) {
 
 async function openCardSheet(item) {
   const { onShare, onDelete, onEdit } = window.__cardActions || {};
-  const canShare = state.adminUnlocked && typeof onShare === "function";
+  const canShare = !isLocalOnlyApp() && state.adminUnlocked && typeof onShare === "function";
   const actions = [
     { label: item.pinned ? "取消置顶" : "置顶", icon: item.pinned ? "★" : "☆", onClick: () => togglePin(item) },
     { label: "复制 otpauth 链接", icon: "🔗", onClick: async () => {
@@ -581,7 +582,7 @@ export function renderProjectBar(onSelect, onCreate) {
   if (!bar) return;
   bar.innerHTML = "";
 
-  if (!state.adminUnlocked || state.syncProjects.length === 0) {
+  if ((!isLocalOnlyApp() && !state.adminUnlocked) || state.syncProjects.length === 0) {
     bar.classList.add("hidden");
     return;
   }
