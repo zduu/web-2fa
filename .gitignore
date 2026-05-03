@@ -10,4 +10,4 @@ wrangler.*.toml
 node_modules/
 .wrangler/
 .claude/
-
+dist-local/

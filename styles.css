@@ -696,6 +696,9 @@ kbd {
 }
 .drawer-tabs .tab:hover { color: var(--fg); }
 .drawer-tabs .tab.active { background: var(--primary-soft); color: var(--primary-2); }
+.drawer-tabs .tab.project-tab { display: none; }
+.drawer.admin .drawer-tabs .tab.project-tab,
+.drawer.local-app .drawer-tabs .tab.project-tab { display: inline-flex; }
 .drawer-tabs .tab.admin-only { display: none; }
 .drawer.admin .drawer-tabs .tab.admin-only { display: inline-flex; }
 

@@ -20,6 +20,7 @@ import { importFromFileHandle } from "./src/ui/import-export.js";
 import { parseOtpAuth, parseOtpAuthMigration } from "./src/core/totp.js";
 import { importFingerprint, normalizeImportedItem } from "./src/core/imports.js";
 import { initTheme } from "./src/ui/theme.js";
+import { canUseCloudApis, isLocalOnlyApp } from "./src/core/runtime.js";
 
 const main = document.getElementById("main");
 let dataChangedDebounce = null;
@@ -59,7 +60,7 @@ async function init() {
   bindGlobalEvents();
 
   // service worker
-  if ("serviceWorker" in navigator) {
+  if (canUseCloudApis() && "serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").then((reg) => {
       // 8.1 检测新版本
       const promptUpdate = (worker) => {
@@ -95,14 +96,16 @@ async function init() {
   }
 
   // gate check
-  gateCheck();
+  if (canUseCloudApis()) gateCheck();
 
   // auto sync if enabled on current project
   const cur = getCurrentProject();
-  if (cur && cur.auto) startAutoSync();
+  if (canUseCloudApis() && cur && cur.auto) startAutoSync();
 
   // listen to data-changed events from cards (HOTP advance)
-  window.addEventListener("data-changed", () => scheduleAutoPush());
+  if (canUseCloudApis()) {
+    window.addEventListener("data-changed", () => scheduleAutoPush());
+  }
 
   // 6.3 同步状态事件
   window.addEventListener("sync-failed", (e) => {
@@ -124,9 +127,12 @@ async function init() {
   });
 
   // 时间漂移检测（5.3）
-  detectTimeDrift();
+  if (canUseCloudApis()) detectTimeDrift();
   // 网络变化重新检测
-  window.addEventListener("online", () => { detectTimeDrift(); updateStatusBar(); });
+  window.addEventListener("online", () => {
+    if (canUseCloudApis()) detectTimeDrift();
+    updateStatusBar();
+  });
   window.addEventListener("offline", updateStatusBar);
 
   // 8.5 PWA share_target / 直接打开 otpauth 链接
@@ -149,7 +155,7 @@ function rerenderAll() {
 function bindGlobalEvents() {
   document.getElementById("btn-add").addEventListener("click", openAdd);
   document.getElementById("fab-add").addEventListener("click", openAdd);
-  document.getElementById("btn-settings").addEventListener("click", () => openDrawer(state.adminUnlocked ? "sync" : "data"));
+  document.getElementById("btn-settings").addEventListener("click", () => openDrawer(isLocalOnlyApp() || state.adminUnlocked ? "sync" : "data"));
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
@@ -166,7 +172,7 @@ function bindGlobalEvents() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     if (e.key === "n" || e.key === "N") { e.preventDefault(); openAdd(); }
-    else if (e.key === ",") { e.preventDefault(); openDrawer(state.adminUnlocked ? "sync" : "data"); }
+    else if (e.key === ",") { e.preventDefault(); openDrawer(isLocalOnlyApp() || state.adminUnlocked ? "sync" : "data"); }
     else if (e.key === "?") { e.preventDefault(); showShortcuts(); }
   });
 
@@ -243,7 +249,7 @@ function showShortcuts() {
 }
 
 async function normalizeProjectContext() {
-  if (state.adminUnlocked) return;
+  if (isLocalOnlyApp() || state.adminUnlocked) return;
   if (state.currentProjectId !== "_all_") return;
   const fallback = state.syncProjects[0];
   if (!fallback) return;
@@ -376,6 +382,10 @@ function formatImportResult(stat, actionLabel) {
 
 // ----- card actions -----
 async function handleShare(item) {
+  if (isLocalOnlyApp()) {
+    toast("本地 APK 版不支持云分享", "warn");
+    return;
+  }
   const choice = await chooseTtl();
   if (!choice || choice.cancel) return;
   try {

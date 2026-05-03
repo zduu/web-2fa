@@ -5,6 +5,7 @@ import { totp, secondsLeft, formatCode } from "./src/core/totp.js";
 import { fromB64url } from "./src/core/crypto.js";
 import { unwrapShareKeyWithPassword } from "./src/core/share-password.js";
 import { initTheme } from "./src/ui/theme.js";
+import { isLocalOnlyApp } from "./src/core/runtime.js";
 
 async function decryptPayload(payload, keyB64url) {
   const iv = fromB64url(payload.iv);
@@ -17,6 +18,10 @@ async function decryptPayload(payload, keyB64url) {
 
 async function main() {
   initTheme();
+  if (isLocalOnlyApp()) {
+    setLabel("本地 APK 版不支持云分享页");
+    return;
+  }
   const params = new URLSearchParams(location.search);
   const sid = params.get("sid");
   const frag = new URL(location.href).hash.replace(/^#/, "");

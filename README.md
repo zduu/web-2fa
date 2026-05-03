@@ -63,6 +63,33 @@
 
 ---
 
+## 📱 本地 APK（无云端）
+
+如果你的目标是“手机上本地运行，不依赖远程云端”，这个仓库现在已经支持 **本地 APK 模式**：
+
+- APK 内运行的是同一套前端核心逻辑，但会切换到 `local-app` 模式
+- 所有账户、项目数据只保存在手机本地 `localStorage`
+- 不再访问 Cloudflare Pages Functions / KV
+- “项目”在 APK 中会变成**本地项目库**，用于本机分类与汇总
+- 云同步 / 云分享 / 管理员云端浏览在 APK 版里默认关闭
+
+### APK 产出方式
+
+APK 不再依赖本地机器构建，统一改为 **GitHub Actions** 产出：
+
+1. 推送到 `main` / `master`，或在 Actions 页面手动触发 `Android APK`
+2. Workflow 会临时安装 Capacitor / TypeScript / Android SDK
+3. 构建完成后，在该次 Actions 的 `Artifacts` 中下载 `web-2fa-local-debug-apk`
+
+说明：
+
+- Web 云端版继续使用根目录源码 + `wrangler pages dev/deploy`
+- APK 本地版仍然通过 `scripts/build-local-web.mjs` 生成 `dist-local/`，但默认由 CI 执行
+- `dist-local/` 只是临时构建产物，不入库
+- 本地 `package.json` 已移除 APK 构建用的 Capacitor 依赖与脚本，避免要求开发机安装整套 Android 打包链
+
+---
+
 ## ⚙️ 部署到 Cloudflare Pages
 
 ### 一、创建 KV 命名空间
@@ -73,6 +100,27 @@
 wrangler pages deploy
 ```
 或在 Pages 控制台连接 Git 仓库自动部署。
+
+如果你不想改现有的 Build command / Build output directory，但又想避免 `android/` 的改动频繁触发 Pages 无效构建，可以在 Cloudflare Pages 控制台配置 **Build watch paths**：
+
+- Include paths: `*`
+- Exclude paths: `android/**`
+
+配置位置：
+
+- Workers & Pages
+- 选择你的 Pages 项目
+- `Settings` → `Build` → `Build watch paths`
+
+这样做的效果是：
+
+- `android/` 下各级目录和文件的改动不会触发新的 Pages 构建
+- Web 源码、`functions/`、根目录页面文件的改动仍会正常触发构建
+
+注意：
+
+- 这只能减少无效构建触发，不能改变 Pages 读取仓库根目录这一事实。
+- 也就是说，它解决的是“不要因为 Android 改动而重建”，不是“从仓库结构上彻底隔离 android 目录”。
 
 ### 三、绑定 KV
 Pages 项目 → Settings → Functions → KV Bindings：变量名 `AUTH_KV` → 选择刚才创建的 KV。

@@ -17,9 +17,14 @@ export function detectDuplicateSyncIds() {
 }
 
 export function createProject({ name, syncId, secret, auto = false, autoInterval = 60000 }) {
+  const projectId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const newProj = {
-    id: `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    name, syncId, secret, auto, autoInterval,
+    id: projectId,
+    name,
+    syncId: syncId || `local-${projectId}`,
+    secret: secret || `local-secret-${Math.random().toString(36).slice(2)}-${Date.now()}`,
+    auto,
+    autoInterval,
     lastSyncedAt: 0,
     itemsData: [],
     itemOrder: [],

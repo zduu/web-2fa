@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Web 2FA Authenticator</string>
+    <string name="title_activity_main">Web 2FA Authenticator</string>
+    <string name="package_name">com.web2fa.local</string>
+    <string name="custom_url_scheme">com.web2fa.local</string>
+</resources>

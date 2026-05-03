@@ -1,9 +1,10 @@
-const CACHE = '2fa-cache-v10';
+const CACHE = '2fa-cache-v11';
 const ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
   '/app.js',
+  '/runtime-config.js',
   '/shared.html',
   '/shared.js',
   '/manifest.webmanifest',
@@ -21,6 +22,7 @@ const ASSETS = [
   '/src/core/storage.js',
   '/src/core/version.js',
   '/src/core/idle.js',
+  '/src/core/runtime.js',
   '/src/core/password-strength.js',
   '/src/core/qrdecode.js',
   // 注意：qrdecode-vendor.js 体积较大（~130KB），仅在不支持原生 BarcodeDetector

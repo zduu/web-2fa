@@ -2,9 +2,11 @@
 // 通过尝试访问需要鉴权的接口（/api/share/list 或 /api/admin/list-all）来验证
 
 import { state, saveGlobalToken, saveAdminUnlocked } from "../core/storage.js";
+import { isLocalOnlyApp } from "../core/runtime.js";
 
 // 探测 token 是否有效。返回 { ok, msg }
 export async function verifyAdminKey(adminKey) {
+  if (isLocalOnlyApp()) return { ok: false, msg: "本地 APK 版不需要 Admin Key" };
   if (!adminKey) return { ok: false, msg: "请输入 Admin Key" };
 
   // 优先用 /api/admin/list-all 探测（这个 endpoint 一定需要鉴权）
