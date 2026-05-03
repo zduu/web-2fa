@@ -1096,6 +1096,28 @@ async function renderAdminPane(pane, renderToken) {
 
   pane.innerHTML = `
     <div class="section">
+      <h3>站点访问密码</h3>
+      <div class="section-card col gap-2">
+        <p class="hint">访问口令内容固定来自 Cloudflare Pages 环境变量 <code>ACCESS_GATE</code>。这里仅控制是否启用该功能，保存结果会写入 Cloudflare KV。</p>
+        <div class="row between">
+          <span class="text-sm">当前状态</span>
+          <span class="tag" id="site-gate-status">读取中</span>
+        </div>
+        <div id="site-gate-source" class="text-xs muted">正在读取当前配置…</div>
+        <div id="site-gate-env" class="text-xs muted">正在检查环境变量…</div>
+        <label class="row gap-2">
+          <input type="checkbox" id="site-gate-enabled" />
+          <span class="text-sm">启用访问口令</span>
+        </label>
+        <div class="btn-row">
+          <button class="btn ghost sm" data-act="gate-refresh">刷新状态</button>
+          <button class="btn sm" data-act="gate-save">保存访问设置</button>
+        </div>
+        <div class="text-xs muted">关闭后会立即移除当前浏览器的访问门 cookie。启用后当前浏览器会自动保留已授权状态。</div>
+      </div>
+    </div>
+
+    <div class="section">
       <h3>云端浏览</h3>
       <div class="section-card col gap-2">
         <p class="hint">列出 KV 中所有 sync:* 项目，可解密查看 / 导出 / 批量管理。</p>
@@ -1191,8 +1213,71 @@ function bindAdminPane(pane) {
   let cloudProjects = [];
   let aggregated = [];
   const selected = state.cloudSelectedProjects = state.cloudSelectedProjects || new Set();
+  let gateState = null;
 
   const cloudList = pane.querySelector("#cloud-list");
+  const gateStatus = pane.querySelector("#site-gate-status");
+  const gateSource = pane.querySelector("#site-gate-source");
+  const gateEnv = pane.querySelector("#site-gate-env");
+  const gateEnabled = pane.querySelector("#site-gate-enabled");
+
+  function syncGateInputs() {
+    if (!gateEnabled) return;
+    const locked = gateState?.editable === false;
+    const cannotEnable = !gateState?.passwordConfigured;
+    gateEnabled.disabled = locked;
+    pane.querySelector('[data-act="gate-refresh"]')?.toggleAttribute("disabled", locked);
+    pane.querySelector('[data-act="gate-save"]')?.toggleAttribute("disabled", locked || (cannotEnable && gateEnabled.checked));
+  }
+
+  function renderGateState(info) {
+    gateState = info;
+    if (!gateStatus || !gateSource || !gateEnv || !gateEnabled) return;
+    gateEnabled.checked = !!info?.enabled;
+    gateStatus.className = `tag ${info?.enabled ? "ok" : ""}`;
+    gateStatus.textContent = info?.enabled ? "已启用" : "未启用";
+
+    const parts = [];
+    if (info?.source === "kv") {
+      parts.push(info.enabled ? "当前由站内开关启用" : "当前由站内开关关闭");
+    } else if (info?.source === "env") {
+      parts.push("当前沿用环境变量的默认启用状态");
+    } else {
+      parts.push("当前没有启用访问口令");
+    }
+    if (info?.updatedAt) parts.push(`最近修改：${new Date(info.updatedAt).toLocaleString()}`);
+    if (info?.editable === false) parts.push("服务端未绑定 AUTH_KV，无法站内修改");
+    gateSource.textContent = parts.join(" · ");
+    gateEnv.textContent = info?.passwordConfigured
+      ? "Pages 环境变量 ACCESS_GATE：已配置"
+      : "Pages 环境变量 ACCESS_GATE：未配置，当前无法启用访问口令";
+    syncGateInputs();
+  }
+
+  async function loadGateState() {
+    if (!gateStatus || !gateSource) return;
+    gateStatus.className = "tag";
+    gateStatus.textContent = "读取中";
+    gateSource.textContent = "正在读取当前配置…";
+    try {
+      const res = await fetch("/api/admin/access-gate", {
+        headers: {
+          "X-Token": state.globalToken,
+          "X-KV-Admin-Key": state.globalToken,
+          "Cache-Control": "no-store",
+        }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data?.success === false) throw new Error(data.error || "读取失败");
+      renderGateState(data);
+    } catch (e) {
+      gateStatus.className = "tag warn";
+      gateStatus.textContent = "读取失败";
+      gateSource.textContent = e.message || "读取失败";
+      if (gateEnv) gateEnv.textContent = "";
+    }
+  }
 
   async function loadCloud() {
     cloudList.innerHTML = `<div class="empty-msg">加载中…</div>`;
@@ -1264,6 +1349,48 @@ function bindAdminPane(pane) {
       cloudList.innerHTML = `<div class="empty-msg">加载失败：${escapeHtml(e.message)}</div>`;
     }
   }
+
+  gateEnabled?.addEventListener("change", syncGateInputs);
+  pane.querySelector('[data-act="gate-refresh"]')?.addEventListener("click", loadGateState);
+  pane.querySelector('[data-act="gate-save"]')?.addEventListener("click", async () => {
+    if (!gateEnabled) return;
+    if (gateEnabled.checked && !gateState?.passwordConfigured) {
+      toast("请先在 Cloudflare Pages 配置 ACCESS_GATE 环境变量", "warn");
+      return;
+    }
+    const ok = await confirmDialog({
+      title: gateEnabled.checked ? "启用访问口令？" : "关闭访问口令？",
+      message: gateEnabled.checked
+        ? "保存后，将开始使用 Pages 环境变量 ACCESS_GATE 作为访问口令。当前浏览器会自动保留已授权状态。"
+        : "关闭后，访客将不再需要先输入访问口令。",
+      okText: "保存",
+      danger: !gateEnabled.checked,
+    });
+    if (!ok) return;
+    if (!(await reauthAdmin("修改站点访问口令"))) return;
+    try {
+      const res = await fetch("/api/admin/access-gate", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Token": state.globalToken,
+          "X-KV-Admin-Key": state.globalToken,
+          "Cache-Control": "no-store",
+        },
+        body: JSON.stringify({
+          enabled: gateEnabled.checked,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      renderGateState(data);
+      toast(gateEnabled.checked ? "访问口令已启用" : "访问口令已关闭", "ok");
+    } catch (e) {
+      toast(e.message || "保存失败", "err");
+    }
+  });
 
   pane.querySelector('[data-act="cloud-load"]').addEventListener("click", loadCloud);
 
@@ -1482,6 +1609,9 @@ function bindAdminPane(pane) {
       toast(`迁移：成功 ${r.ok}，失败 ${r.fail}`, r.ok && !r.fail ? "ok" : (r.ok ? "warn" : "err"));
     } catch (e) { ctl.done("出错：" + e.message); toast(e.message, "err"); }
   });
+
+  syncGateInputs();
+  void loadGateState();
 }
 
 function downloadBlobLike(filename, text) {
