@@ -114,6 +114,18 @@ jobs:
           cd ..
           cp android/app/build/outputs/apk/release/app-release.apk "build/apk-output/${LOCAL_APK_NAME}"
 
+      - name: Verify APK outputs
+        run: |
+          test -s "build/apk-output/${SYNC_APK_NAME}"
+          test -s "build/apk-output/${LOCAL_APK_NAME}"
+          count="$(find build/apk-output -maxdepth 1 -name '*.apk' | wc -l | tr -d ' ')"
+          if [ "$count" != "2" ]; then
+            echo "Expected exactly 2 APK files, got $count"
+            find build/apk-output -maxdepth 1 -type f -print
+            exit 1
+          fi
+          ls -lh build/apk-output/*.apk
+
       - name: Upload release APKs
         uses: actions/upload-artifact@v4
         with:
