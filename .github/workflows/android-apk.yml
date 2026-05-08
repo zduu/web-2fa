@@ -10,11 +10,11 @@ on:
         type: boolean
   push:
     branches:
+      - dev
       - main
       - master
     tags:
       - "v*"
-  pull_request:
 
 permissions:
   contents: write
@@ -27,8 +27,8 @@ jobs:
       TYPESCRIPT_VERSION: 5.9.3
       ANDROID_PLATFORM: android-35
       ANDROID_BUILD_TOOLS: 35.0.0
-      SYNC_APK_NAME: web-2fa-sync-debug.apk
-      LOCAL_APK_NAME: web-2fa-local-debug.apk
+      SYNC_APK_NAME: web-2fa-sync-release.apk
+      LOCAL_APK_NAME: web-2fa-local-release.apk
     steps:
       - uses: actions/checkout@v4
 
@@ -66,6 +66,28 @@ jobs:
           SDK_PATH="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           printf 'sdk.dir=%s\n' "$SDK_PATH" > android/local.properties
 
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "Release signing secrets are required so APK updates can be installed over previous versions."
+            echo "Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD in repository secrets."
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/release.keystore
+          {
+            printf 'RELEASE_STORE_FILE=release.keystore\n'
+            printf 'RELEASE_STORE_PASSWORD=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'RELEASE_KEY_ALIAS=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'RELEASE_KEY_PASSWORD=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'APP_VERSION_CODE=%s\n' "$GITHUB_RUN_NUMBER"
+            printf 'APP_VERSION_NAME=0.2.%s\n' "$GITHUB_RUN_NUMBER"
+          } >> android/gradle.properties
+
       - name: Build sync APK
         run: |
           mkdir -p build/apk-output
@@ -76,9 +98,9 @@ jobs:
           npx cap sync android
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
           cd ..
-          cp android/app/build/outputs/apk/debug/app-debug.apk "build/apk-output/${SYNC_APK_NAME}"
+          cp android/app/build/outputs/apk/release/app-release.apk "build/apk-output/${SYNC_APK_NAME}"
 
       - name: Build local-only APK
         run: |
@@ -88,14 +110,14 @@ jobs:
             npm run build:local-web
           npx cap sync android
           cd android
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
           cd ..
-          cp android/app/build/outputs/apk/debug/app-debug.apk "build/apk-output/${LOCAL_APK_NAME}"
+          cp android/app/build/outputs/apk/release/app-release.apk "build/apk-output/${LOCAL_APK_NAME}"
 
-      - name: Upload debug APKs
+      - name: Upload release APKs
         uses: actions/upload-artifact@v4
         with:
-          name: web-2fa-android-debug-apks
+          name: web-2fa-android-release-apks
           path: build/apk-output/*.apk
           if-no-files-found: error
 
@@ -109,7 +131,7 @@ jobs:
             TAG="apk-${GITHUB_RUN_NUMBER}"
           fi
           APK_DIR="build/apk-output"
-          NOTES="Debug APKs built by GitHub Actions. Includes web-2fa-sync-debug.apk, where the cloud URL is configured inside the app, and web-2fa-local-debug.apk for offline-only local use."
+          NOTES="Release APKs built by GitHub Actions. Both APKs use the same stable signing key and an increasing versionCode, so installing a newer APK over an older one preserves local data. Includes web-2fa-sync-release.apk, where the cloud URL is configured inside the app, and web-2fa-local-release.apk for offline-only local use."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK_DIR/${SYNC_APK_NAME}" "$APK_DIR/${LOCAL_APK_NAME}" --clobber
           else
