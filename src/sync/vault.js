@@ -7,6 +7,7 @@ import { importRsaPublicKey, importRsaPrivateKey, rsaEncryptSecret, rsaDecryptSe
 import { deriveSyncKey, syncEncrypt, syncDecrypt } from "../core/crypto.js";
 import { getSyncEndpoint } from "./sync.js";
 import { ensureItemDefaults } from "../core/storage.js";
+import { apiUrl } from "../core/runtime.js";
 
 export const LS_VAULT_ENABLED = "vault.enabled";
 export const LS_VAULT_PUBKEY = "vault.pubkey";
@@ -72,7 +73,7 @@ export async function escrowSecrets({ syncIds, secret, pubKeys, pubKeyPem, onPro
         const cipher = await rsaEncryptSecret(entry.key, secret, id);
         recipients.push({ kid: entry.id, name: entry.name, cipher });
       }
-      const r = await fetch(`/api/vault/${encodeURIComponent(id)}`, {
+      const r = await fetch(apiUrl(`/api/vault/${encodeURIComponent(id)}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Token": token },
         body: JSON.stringify({ v: 2, recipients }),
@@ -93,7 +94,7 @@ export async function recoverSecrets({ syncIds, privKeyPem, onProgress }) {
   let i = 0;
   for (const id of syncIds) {
     try {
-      const r = await fetch(`/api/vault/${encodeURIComponent(id)}`, {
+      const r = await fetch(apiUrl(`/api/vault/${encodeURIComponent(id)}`), {
         headers: { "X-Token": token, "Cache-Control": "no-store" }
       });
       if (!r.ok) continue;

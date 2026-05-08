@@ -27,7 +27,7 @@ import {
   scorePassword, getUnlockBlockMs, recordUnlockFail, clearUnlockFails,
 } from "../core/password-strength.js";
 import { pemFingerprint } from "../core/crypto.js";
-import { canUseCloudApis, isLocalOnlyApp } from "../core/runtime.js";
+import { apiUrl, canUseCloudApis, isLocalOnlyApp } from "../core/runtime.js";
 
 const moduleCache = {
   share: null,
@@ -1260,7 +1260,7 @@ function bindAdminPane(pane) {
     gateStatus.textContent = "读取中";
     gateSource.textContent = "正在读取当前配置…";
     try {
-      const res = await fetch("/api/admin/access-gate", {
+      const res = await fetch(apiUrl("/api/admin/access-gate"), {
         headers: {
           "X-Token": state.globalToken,
           "X-KV-Admin-Key": state.globalToken,
@@ -1369,7 +1369,7 @@ function bindAdminPane(pane) {
     if (!ok) return;
     if (!(await reauthAdmin("修改站点访问口令"))) return;
     try {
-      const res = await fetch("/api/admin/access-gate", {
+      const res = await fetch(apiUrl("/api/admin/access-gate"), {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -1449,7 +1449,7 @@ function bindAdminPane(pane) {
     cl.innerHTML = '<div class="empty-msg">加载中…</div>';
     try {
       const token = state.globalToken;
-      const res = await fetch("/api/sync-trash", { headers: { "X-Token": token, "Cache-Control": "no-store" } });
+      const res = await fetch(apiUrl("/api/sync-trash"), { headers: { "X-Token": token, "Cache-Control": "no-store" } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const items = Array.isArray(data.items) ? data.items : [];
@@ -1470,13 +1470,13 @@ function bindAdminPane(pane) {
         cl.appendChild(li);
         li.querySelector("[data-restore]").addEventListener("click", async () => {
           try {
-            const r = await fetch(`/api/sync-backup/${encodeURIComponent(it.syncId)}`, { headers: { "X-Token": state.globalToken, "Cache-Control": "no-store" } });
+            const r = await fetch(apiUrl(`/api/sync-backup/${encodeURIComponent(it.syncId)}`), { headers: { "X-Token": state.globalToken, "Cache-Control": "no-store" } });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const info = await r.json();
             const backups = Array.isArray(info.backups) ? info.backups : [];
             if (!backups.length) { toast("没有可用备份", "warn"); return; }
             const pick = backups[0]; // 最新一份
-            const restore = await fetch(`/api/sync-backup/${encodeURIComponent(it.syncId)}?ts=${pick.ts}`, { method: "POST", headers: { "X-Token": state.globalToken } });
+            const restore = await fetch(apiUrl(`/api/sync-backup/${encodeURIComponent(it.syncId)}?ts=${pick.ts}`), { method: "POST", headers: { "X-Token": state.globalToken } });
             if (!restore.ok) throw new Error(`HTTP ${restore.status}`);
             toast(`已用 ${new Date(pick.ts).toLocaleString()} 的备份恢复`, "ok");
             li.remove();
@@ -1487,7 +1487,7 @@ function bindAdminPane(pane) {
           if (!ok) return;
           if (!(await reauthAdmin("彻底删除项目"))) return;
           try {
-            const r = await fetch(`/api/sync/${encodeURIComponent(it.syncId)}?hard=1`, { method: "DELETE", headers: { "X-Token": state.globalToken } });
+            const r = await fetch(apiUrl(`/api/sync/${encodeURIComponent(it.syncId)}?hard=1`), { method: "DELETE", headers: { "X-Token": state.globalToken } });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             toast("已彻底删除", "ok");
             li.remove();
@@ -1502,7 +1502,7 @@ function bindAdminPane(pane) {
     const el = pane.querySelector("#audit-list");
     el.innerHTML = '<div class="empty-msg">加载中…</div>';
     try {
-      const res = await fetch("/api/admin/audit?limit=100", {
+      const res = await fetch(apiUrl("/api/admin/audit?limit=100"), {
         headers: { "X-Token": state.globalToken, "Cache-Control": "no-store" }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

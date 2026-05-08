@@ -3,9 +3,10 @@
 
 import { state, getCurrentProject, getGlobalToken, saveSyncProjects, persist, ensureItemDefaults } from "../core/storage.js";
 import { deriveSyncKey, syncEncrypt, syncDecrypt } from "../core/crypto.js";
+import { apiUrl } from "../core/runtime.js";
 
 export function getSyncEndpoint(id) {
-  return `/api/sync/${encodeURIComponent(id)}`;
+  return apiUrl(`/api/sync/${encodeURIComponent(id)}`);
 }
 
 // ----- merge logic -----

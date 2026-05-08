@@ -5,11 +5,12 @@ import { deriveSyncKey, syncDecrypt } from "../core/crypto.js";
 import { buildOtpAuthUrl } from "../core/totp.js";
 import { downloadBlob, sanitizeFilePart } from "../ui/toast.js";
 import { getSyncEndpoint } from "./sync.js";
+import { apiUrl } from "../core/runtime.js";
 
 export async function listAllCloudProjects() {
   const token = getGlobalToken();
   if (!token) throw new Error("需要 Admin Key");
-  const res = await fetch("/api/admin/list-all", {
+  const res = await fetch(apiUrl("/api/admin/list-all"), {
     method: "POST",
     headers: { "X-KV-Admin-Key": token, "X-Token": token, "Content-Type": "application/json" }
   });
