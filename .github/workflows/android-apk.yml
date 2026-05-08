@@ -78,7 +78,7 @@ jobs:
             echo "Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD in repository secrets."
             exit 1
           fi
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/release.keystore
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
           {
             printf 'RELEASE_STORE_FILE=release.keystore\n'
             printf 'RELEASE_STORE_PASSWORD=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
