@@ -94,16 +94,14 @@ APK 不依赖本地机器构建，统一通过 **GitHub Actions** 产出：
 
 ### APK 云同步配置
 
-在 GitHub 仓库 `Settings → Secrets and variables → Actions → Variables` 中配置：
+云端链接在同步版 APK 内自行设置，不在 GitHub Actions / workflow 里写死：
 
-| 变量名 | 作用 |
-|---|---|
-| `APP_API_BASE_URL` | Cloudflare Pages 站点地址，例如 `https://your-app.pages.dev`，APK 的 `/api/*` 会转发到这里 |
-| `APP_PUBLIC_BASE_URL` | 分享链接使用的公开站点地址；不填则默认使用 `APP_API_BASE_URL` |
+1. 安装并打开 `web-2fa-sync-debug.apk`
+2. 进入 `设置 → 数据 → 云端地址`
+3. 填写 Cloudflare Pages 地址，例如 `https://your-app.pages.dev`
+4. 可选填写公开站点地址；留空时默认同云端 API 地址
 
-也可以在手动触发 `Android APK` workflow 时临时填写 `api_base_url` / `public_base_url`。这些配置只影响 `web-2fa-sync-debug.apk`；`web-2fa-local-debug.apk` 始终是纯本地离线版。
-
-同步版 APK 也支持在应用内自行设置云端链接：打开 `设置 → 数据 → 云端地址`，填写 Cloudflare Pages 地址并保存。应用内设置会优先生效，因此后续更换域名不需要重新打包 APK。
+保存后，推送、拉取、分享和管理员接口都会使用这个地址。`web-2fa-local-debug.apk` 始终是纯本地离线版，不显示云端地址入口，也不会连接云端。
 
 如果 Cloudflare Pages 启用了访问口令，移动 APK 仍可通过 `Admin Key` 调用同步接口；Functions 已允许 `https://localhost` / `capacitor://localhost` 的跨源 API 请求。需要限制来源时，可在 Pages 环境变量中设置 `CORS_ORIGIN`（多个来源用逗号分隔）。
 
