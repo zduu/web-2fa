@@ -79,10 +79,10 @@ APK 不依赖本地机器构建，统一通过 **GitHub Actions** 产出：
 
 1. 推送到 `main` / `master`，创建 `v*` tag，或在 Actions 页面手动触发 `Android APK`
 2. Workflow 会临时安装 Capacitor / TypeScript / Android SDK
-3. 构建完成后，在该次 Actions 的 `Artifacts` 中下载 `web-2fa-android-debug-apks`
+3. 构建完成后，在该次 Actions 的 `Artifacts` 中下载 `web-2fa-android-release-apks`
 4. Artifact 和 Release 都会包含两个 APK：
-   - `web-2fa-sync-debug.apk`：带云同步能力
-   - `web-2fa-local-debug.apk`：纯本地离线版
+   - `web-2fa-sync-release.apk`：带云同步能力
+   - `web-2fa-local-release.apk`：纯本地离线版
 5. 创建 `v*` tag 时会自动发布 GitHub Release；手动触发时勾选 `create_release` 也会发布 Release
 
 说明：
@@ -91,17 +91,40 @@ APK 不依赖本地机器构建，统一通过 **GitHub Actions** 产出：
 - APK 版仍然通过 `scripts/build-local-web.mjs` 生成 `dist-local/`，但默认由 CI 执行
 - `dist-local/` 只是临时构建产物，不入库
 - 本地 `package.json` 已移除 APK 构建用的 Capacitor 依赖与脚本，避免要求开发机安装整套 Android 打包链
+- APK 使用固定 release 签名，并用 GitHub Actions run number 递增 `versionCode`，所以安装新版会覆盖旧版并保留本地数据、主密码状态和同步版 APK 内填写的云端地址
+
+### APK 更新继承配置
+
+要让每次发布的新 APK 能直接覆盖安装并继承旧数据，必须在 GitHub Secrets 固定同一把 Android 签名密钥：
+
+| Secret | 作用 |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | release keystore 文件的 base64 内容 |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
+| `ANDROID_KEY_ALIAS` | key alias |
+| `ANDROID_KEY_PASSWORD` | key 密码 |
+
+首次生成 keystore 示例：
+
+```bash
+keytool -genkeypair -v -keystore web-2fa-release.keystore -alias web2fa -keyalg RSA -keysize 2048 -validity 10000
+base64 -i web-2fa-release.keystore | pbcopy
+```
+
+把 base64 内容保存到 `ANDROID_KEYSTORE_BASE64`，其余密码和 alias 保存到对应 Secrets。以后不要更换这把 keystore；更换后 Android 会认为是另一个签名，无法覆盖安装旧 APK。
+
+注意：如果手机上已经安装过早期的 debug APK，第一次切换到 release 签名 APK 时无法直接覆盖安装，因为签名不同。需要先在旧 APK 内导出数据，再卸载旧版、安装 release APK 并导入数据。之后只要继续使用同一把 release keystore，新 APK 就可以直接覆盖安装并继承数据。
 
 ### APK 云同步配置
 
 云端链接在同步版 APK 内自行设置，不在 GitHub Actions / workflow 里写死：
 
-1. 安装并打开 `web-2fa-sync-debug.apk`
+1. 安装并打开 `web-2fa-sync-release.apk`
 2. 进入 `设置 → 数据 → 云端地址`
 3. 填写 Cloudflare Pages 地址，例如 `https://your-app.pages.dev`
 4. 可选填写公开站点地址；留空时默认同云端 API 地址
 
-保存后，推送、拉取、分享和管理员接口都会使用这个地址。`web-2fa-local-debug.apk` 始终是纯本地离线版，不显示云端地址入口，也不会连接云端。
+保存后，推送、拉取、分享和管理员接口都会使用这个地址。`web-2fa-local-release.apk` 始终是纯本地离线版，不显示云端地址入口，也不会连接云端。
 
 如果 Cloudflare Pages 启用了访问口令，移动 APK 仍可通过 `Admin Key` 调用同步接口；Functions 已允许 `https://localhost` / `capacitor://localhost` 的跨源 API 请求。需要限制来源时，可在 Pages 环境变量中设置 `CORS_ORIGIN`（多个来源用逗号分隔）。
 

@@ -1,5 +1,13 @@
 apply plugin: 'com.android.application'
 
+def appVersionCode = (project.findProperty('APP_VERSION_CODE') ?: '1').toInteger()
+def appVersionName = project.findProperty('APP_VERSION_NAME') ?: '1.0'
+def releaseStoreFile = project.findProperty('RELEASE_STORE_FILE')
+def hasReleaseSigning = releaseStoreFile &&
+        project.findProperty('RELEASE_STORE_PASSWORD') &&
+        project.findProperty('RELEASE_KEY_ALIAS') &&
+        project.findProperty('RELEASE_KEY_PASSWORD')
+
 android {
     namespace "com.web2fa.local"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +15,8 @@ android {
         applicationId "com.web2fa.local"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,9 +24,22 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword project.findProperty('RELEASE_STORE_PASSWORD')
+                keyAlias project.findProperty('RELEASE_KEY_ALIAS')
+                keyPassword project.findProperty('RELEASE_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
