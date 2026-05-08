@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const outDir = path.join(root, "dist-local");
+const runtimeMode = process.env.APP_RUNTIME_MODE || "local-app";
+const apiBaseUrl = process.env.APP_API_BASE_URL || "";
+const publicBaseUrl = process.env.APP_PUBLIC_BASE_URL || apiBaseUrl;
 
 const files = [
   "index.html",
@@ -31,6 +34,10 @@ for (const dir of dirs) {
 
 await writeFile(
   path.join(outDir, "runtime-config.js"),
-  'window.__APP_RUNTIME__ = window.__APP_RUNTIME__ || { mode: "local-app" };\n',
+  `window.__APP_RUNTIME__ = window.__APP_RUNTIME__ || ${JSON.stringify({
+    mode: runtimeMode,
+    apiBaseUrl,
+    publicBaseUrl,
+  })};\n`,
   "utf8"
 );

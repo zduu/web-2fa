@@ -20,7 +20,7 @@ import { importFromFileHandle } from "./src/ui/import-export.js";
 import { parseOtpAuth, parseOtpAuthMigration } from "./src/core/totp.js";
 import { importFingerprint, normalizeImportedItem } from "./src/core/imports.js";
 import { initTheme } from "./src/ui/theme.js";
-import { canUseCloudApis, isLocalOnlyApp } from "./src/core/runtime.js";
+import { apiUrl, canUseCloudApis, isLocalOnlyApp } from "./src/core/runtime.js";
 
 const main = document.getElementById("main");
 let dataChangedDebounce = null;
@@ -757,7 +757,7 @@ async function revokeAllShares(item) {
     if (!sid) continue;
     result.attempted++;
     try {
-      const res = await fetch(`/api/share/${encodeURIComponent(sid)}`, { method: "DELETE", headers });
+      const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "DELETE", headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       result.revoked++;
     } catch (e) {
@@ -809,7 +809,7 @@ function updateStatusBar() {
 async function detectTimeDrift() {
   try {
     const t0 = Date.now();
-    const res = await fetch("/", { method: "HEAD", cache: "no-store" });
+    const res = await fetch(apiUrl("/api/health"), { method: "GET", cache: "no-store" });
     const t1 = Date.now();
     const dateHeader = res.headers.get("Date");
     if (!dateHeader) return;
@@ -831,7 +831,7 @@ async function detectTimeDrift() {
 // ----- gate -----
 async function gateCheck() {
   try {
-    const res = await fetch("/api/gate", { method: "GET", headers: { "Cache-Control": "no-cache" } });
+    const res = await fetch(apiUrl("/api/gate"), { method: "GET", headers: { "Cache-Control": "no-cache" } });
     if (res.status === 403) showGateModal();
   } catch {}
 }
@@ -860,7 +860,7 @@ function showGateModal() {
         const pw = pass.value;
         if (!pw) { msg.textContent = "请输入访问口令"; return; }
         try {
-          const res = await fetch("/api/gate", {
+          const res = await fetch(apiUrl("/api/gate"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ password: pw })

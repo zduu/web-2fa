@@ -63,30 +63,47 @@
 
 ---
 
-## 📱 本地 APK（无云端）
+## 📱 Android APK（本地可用，可选云同步）
 
-如果你的目标是“手机上本地运行，不依赖远程云端”，这个仓库现在已经支持 **本地 APK 模式**：
+如果你的目标是“手机上像本地应用一样运行，断网也能生成验证码，联网时再同步”，这个仓库支持 **Android APK 模式**：
 
-- APK 内运行的是同一套前端核心逻辑，但会切换到 `local-app` 模式
-- 所有账户、项目数据只保存在手机本地 `localStorage`
-- 不再访问 Cloudflare Pages Functions / KV
-- “项目”在 APK 中会变成**本地项目库**，用于本机分类与汇总
-- 云同步 / 云分享 / 管理员云端浏览在 APK 版里默认关闭
+- APK 内运行同一套前端核心逻辑，数据仍优先保存在手机本地 `localStorage`
+- `web-2fa-local-debug.apk` 是纯本地版：完全离线可用，不启用云端 API
+- `web-2fa-sync-debug.apk` 是同步版：配置 Cloudflare Pages 站点地址后，会把 `/api/*` 请求发到该站点，支持端到端加密的云同步、分享和管理员功能
+- 断网时本地验证码不受影响；恢复网络后可手动推送 / 拉取，或使用自动同步
+- 云端仍只保存密文，`Sync Secret` 不会上传
 
 ### APK 产出方式
 
-APK 不再依赖本地机器构建，统一改为 **GitHub Actions** 产出：
+APK 不依赖本地机器构建，统一通过 **GitHub Actions** 产出：
 
-1. 推送到 `main` / `master`，或在 Actions 页面手动触发 `Android APK`
+1. 推送到 `main` / `master`，创建 `v*` tag，或在 Actions 页面手动触发 `Android APK`
 2. Workflow 会临时安装 Capacitor / TypeScript / Android SDK
-3. 构建完成后，在该次 Actions 的 `Artifacts` 中下载 `web-2fa-local-debug-apk`
+3. 构建完成后，在该次 Actions 的 `Artifacts` 中下载 `web-2fa-android-debug-apks`
+4. Artifact 和 Release 都会包含两个 APK：
+   - `web-2fa-sync-debug.apk`：带云同步能力
+   - `web-2fa-local-debug.apk`：纯本地离线版
+5. 创建 `v*` tag 时会自动发布 GitHub Release；手动触发时勾选 `create_release` 也会发布 Release
 
 说明：
 
 - Web 云端版继续使用根目录源码 + `wrangler pages dev/deploy`
-- APK 本地版仍然通过 `scripts/build-local-web.mjs` 生成 `dist-local/`，但默认由 CI 执行
+- APK 版仍然通过 `scripts/build-local-web.mjs` 生成 `dist-local/`，但默认由 CI 执行
 - `dist-local/` 只是临时构建产物，不入库
 - 本地 `package.json` 已移除 APK 构建用的 Capacitor 依赖与脚本，避免要求开发机安装整套 Android 打包链
+
+### APK 云同步配置
+
+在 GitHub 仓库 `Settings → Secrets and variables → Actions → Variables` 中配置：
+
+| 变量名 | 作用 |
+|---|---|
+| `APP_API_BASE_URL` | Cloudflare Pages 站点地址，例如 `https://your-app.pages.dev`，APK 的 `/api/*` 会转发到这里 |
+| `APP_PUBLIC_BASE_URL` | 分享链接使用的公开站点地址；不填则默认使用 `APP_API_BASE_URL` |
+
+也可以在手动触发 `Android APK` workflow 时临时填写 `api_base_url` / `public_base_url`。这些配置只影响 `web-2fa-sync-debug.apk`；`web-2fa-local-debug.apk` 始终是纯本地离线版。
+
+如果 Cloudflare Pages 启用了访问口令，移动 APK 仍可通过 `Admin Key` 调用同步接口；Functions 已允许 `https://localhost` / `capacitor://localhost` 的跨源 API 请求。需要限制来源时，可在 Pages 环境变量中设置 `CORS_ORIGIN`（多个来源用逗号分隔）。
 
 ---
 

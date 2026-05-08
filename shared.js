@@ -5,7 +5,7 @@ import { totp, secondsLeft, formatCode } from "./src/core/totp.js";
 import { fromB64url } from "./src/core/crypto.js";
 import { unwrapShareKeyWithPassword } from "./src/core/share-password.js";
 import { initTheme } from "./src/ui/theme.js";
-import { isLocalOnlyApp } from "./src/core/runtime.js";
+import { apiUrl, isLocalOnlyApp } from "./src/core/runtime.js";
 
 async function decryptPayload(payload, keyB64url) {
   const iv = fromB64url(payload.iv);
@@ -37,7 +37,7 @@ async function main() {
     : null;
   if (!sid || (!kParam && !wrappedKey)) { setLabel("缺少参数"); return; }
 
-  const res = await fetch(`/api/share/${encodeURIComponent(sid)}`);
+  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`));
   if (res.status === 410) { setLabel("分享已达访问上限，已失效"); return; }
   if (res.status === 404) { setLabel("分享不存在或已过期"); return; }
   if (!res.ok) { setLabel("分享不存在或已过期"); return; }

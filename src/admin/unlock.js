@@ -2,16 +2,17 @@
 // 通过尝试访问需要鉴权的接口（/api/share/list 或 /api/admin/list-all）来验证
 
 import { state, saveGlobalToken, saveAdminUnlocked } from "../core/storage.js";
-import { isLocalOnlyApp } from "../core/runtime.js";
+import { apiUrl, canUseCloudApis, isLocalOnlyApp } from "../core/runtime.js";
 
 // 探测 token 是否有效。返回 { ok, msg }
 export async function verifyAdminKey(adminKey) {
   if (isLocalOnlyApp()) return { ok: false, msg: "本地 APK 版不需要 Admin Key" };
+  if (!canUseCloudApis()) return { ok: false, msg: "APK 未配置云端 API 地址" };
   if (!adminKey) return { ok: false, msg: "请输入 Admin Key" };
 
   // 优先用 /api/admin/list-all 探测（这个 endpoint 一定需要鉴权）
   try {
-    const res = await fetch("/api/admin/list-all", {
+    const res = await fetch(apiUrl("/api/admin/list-all"), {
       method: "POST",
       headers: {
         "X-KV-Admin-Key": adminKey,
@@ -34,7 +35,7 @@ export async function verifyAdminKey(adminKey) {
 
 async function probeShareList(adminKey) {
   try {
-    const res = await fetch("/api/share/list", {
+    const res = await fetch(apiUrl("/api/share/list"), {
       headers: { "X-Token": adminKey }
     });
     if (res.status === 401) return { ok: false, msg: "Admin Key 不正确" };

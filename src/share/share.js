@@ -5,6 +5,7 @@ import { state, getCurrentProject, getGlobalToken, saveSyncProjects, persist } f
 import { b64url } from "../core/crypto.js";
 import { wrapShareKeyWithPassword } from "../core/share-password.js";
 import { pushProject } from "../sync/sync.js";
+import { apiUrl, getPublicBaseUrl } from "../core/runtime.js";
 
 export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   if ((item.type || "totp") !== "totp") throw new Error("仅支持分享 TOTP");
@@ -52,14 +53,14 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const token = getGlobalToken();
   if (token) headers["X-Token"] = token;
 
-  const res = await fetch(`/api/share/${encodeURIComponent(sid)}${qs}`, { method: "PUT", headers, body });
+  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
   if (!res.ok) { const e = new Error(`server-${res.status}`); e.status = res.status; throw e; }
 
   // also store the share key on the server (best effort, requires token)
   try {
     if (token) {
       const createdAt = Number(meta.createdAt || Date.now());
-      await fetch(`/api/sharekey/${encodeURIComponent(sid)}${qs}`, {
+      await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}${qs}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Token": token },
         body: JSON.stringify({
@@ -79,7 +80,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
     }
   } catch {}
 
-  const link = `${location.origin}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
+  const link = `${getPublicBaseUrl()}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
   return { link, sid, k: b64url(keyRaw), requiresPassword: !!password };
 }
 
@@ -131,9 +132,9 @@ function findItemInProject(projId, itemId) {
 export async function revokeShare(sid) {
   const token = getGlobalToken();
   const headers = token ? { "X-Token": token } : {};
-  const res = await fetch(`/api/share/${encodeURIComponent(sid)}`, { method: "DELETE", headers });
+  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "DELETE", headers });
   // best effort delete sharekey
-  try { await fetch(`/api/sharekey/${encodeURIComponent(sid)}`, { method: "DELETE", headers }); } catch {}
+  try { await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}`), { method: "DELETE", headers }); } catch {}
   // also clear local references
   const removeFromList = (arr) => {
     if (!Array.isArray(arr)) return false;
@@ -155,7 +156,7 @@ export async function revokeShare(sid) {
 // HEAD probe for share existence
 export async function probeShare(sid) {
   try {
-    const r = await fetch(`/api/share/${encodeURIComponent(sid)}`, { method: "HEAD" });
+    const r = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "HEAD" });
     return r.status === 200;
   } catch { return false; }
 }
@@ -190,7 +191,7 @@ export function collectLocalShares() {
 export async function fetchCloudShares() {
   const token = getGlobalToken();
   if (!token) throw new Error("需要 Admin Key");
-  const res = await fetch("/api/share/list", { headers: { "X-Token": token, "Cache-Control": "no-store" } });
+  const res = await fetch(apiUrl("/api/share/list"), { headers: { "X-Token": token, "Cache-Control": "no-store" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json().catch(() => ({ sids: [] }));
   return Array.isArray(data.sids) ? data.sids : [];
@@ -204,7 +205,7 @@ export async function fetchCloudShareStats(sids = []) {
     if (sid) params.append("sid", sid);
   }
   const qs = params.toString();
-  const res = await fetch(`/api/share/stat${qs ? `?${qs}` : ""}`, {
+  const res = await fetch(apiUrl(`/api/share/stat${qs ? `?${qs}` : ""}`), {
     headers: { "X-Token": token, "Cache-Control": "no-store" }
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -225,7 +226,7 @@ export async function fetchSharedMeta(sid) {
   const token = getGlobalToken();
   if (!token) return null;
   try {
-    const r = await fetch(`/api/sharekey/${encodeURIComponent(sid)}`, {
+    const r = await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}`), {
       headers: { "X-Token": token, "Cache-Control": "no-store" }
     });
     if (!r.ok) return null;
