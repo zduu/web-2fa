@@ -27,7 +27,10 @@ import {
   scorePassword, getUnlockBlockMs, recordUnlockFail, clearUnlockFails,
 } from "../core/password-strength.js";
 import { pemFingerprint } from "../core/crypto.js";
-import { apiUrl, canUseCloudApis, isLocalOnlyApp } from "../core/runtime.js";
+import {
+  apiUrl, canUseCloudApis, clearCloudBaseUrls, getCloudBaseUrls,
+  isAndroidApp, isLocalOnlyApp, setCloudBaseUrls,
+} from "../core/runtime.js";
 
 const moduleCache = {
   share: null,
@@ -558,8 +561,33 @@ function renderDataPane(pane) {
   const isLocked = !state.unlocked;
   const hasPasskey = hasPasskeyUnlock();
   const passkeyInfo = getPasskeySlotInfo();
+  const cloudCfg = isAndroidApp() ? getCloudBaseUrls() : null;
 
   pane.innerHTML = `
+    ${cloudCfg ? `
+    <div class="section">
+      <h3>云端地址</h3>
+      <div class="section-card col gap-2">
+        <div class="field">
+          <label for="cloud-api-url">云端 API 地址</label>
+          <input id="cloud-api-url" class="input mono" inputmode="url" placeholder="https://your-app.pages.dev" value="${escapeHtml(cloudCfg.apiBaseUrl || "")}" />
+        </div>
+        <div class="field">
+          <label for="cloud-public-url">公开站点地址 <span class="muted">（分享链接用，可留空）</span></label>
+          <input id="cloud-public-url" class="input mono" inputmode="url" placeholder="默认同云端 API 地址" value="${escapeHtml(cloudCfg.publicBaseUrl || "")}" />
+        </div>
+        <div class="row between">
+          <span class="tag ${cloudCfg.apiBaseUrl ? "ok" : "warn"}">${cloudCfg.apiBaseUrl ? "已配置" : "未配置"}</span>
+          <div class="btn-row">
+            <button class="btn ghost sm" data-act="cloud-clear">清空</button>
+            <button class="btn sm" data-act="cloud-save">保存</button>
+          </div>
+        </div>
+        <p class="hint">只影响同步版 APK。保存后，推送、拉取、分享和管理员接口会使用这个地址；纯本地 APK 不会连接云端。</p>
+      </div>
+    </div>
+    ` : ""}
+
     <div class="section">
       <h3>导入 / 导出</h3>
       <div class="section-card col gap-2">
@@ -658,6 +686,37 @@ function renderDataPane(pane) {
     const { importFromFile } = await loadImportExportModule();
     const ok = await importFromFile();
     if (ok) { renderActivePane(); onChangeCb?.(); }
+  });
+
+  pane.querySelector('[data-act="cloud-save"]')?.addEventListener("click", async () => {
+    const apiBaseUrl = pane.querySelector("#cloud-api-url")?.value || "";
+    const publicBaseUrl = pane.querySelector("#cloud-public-url")?.value || "";
+    try {
+      const saved = setCloudBaseUrls({ apiBaseUrl, publicBaseUrl });
+      stopAutoSync();
+      syncAdminClass();
+      toast(saved.apiBaseUrl ? "云端地址已保存" : "云端地址已清空", "ok");
+      renderDataPane(pane);
+      onChangeCb?.();
+    } catch (e) {
+      toast(e.message || "保存失败", "err");
+    }
+  });
+
+  pane.querySelector('[data-act="cloud-clear"]')?.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "清空云端地址？",
+      message: "清空后，同步版 APK 会停止访问云端，直到重新填写地址。",
+      danger: true,
+      okText: "清空",
+    });
+    if (!ok) return;
+    clearCloudBaseUrls();
+    stopAutoSync();
+    syncAdminClass();
+    toast("云端地址已清空", "ok");
+    renderDataPane(pane);
+    onChangeCb?.();
   });
 
   pane.querySelector('[data-act="set-master"]')?.addEventListener("click", async () => {

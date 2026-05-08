@@ -103,6 +103,8 @@ APK 不依赖本地机器构建，统一通过 **GitHub Actions** 产出：
 
 也可以在手动触发 `Android APK` workflow 时临时填写 `api_base_url` / `public_base_url`。这些配置只影响 `web-2fa-sync-debug.apk`；`web-2fa-local-debug.apk` 始终是纯本地离线版。
 
+同步版 APK 也支持在应用内自行设置云端链接：打开 `设置 → 数据 → 云端地址`，填写 Cloudflare Pages 地址并保存。应用内设置会优先生效，因此后续更换域名不需要重新打包 APK。
+
 如果 Cloudflare Pages 启用了访问口令，移动 APK 仍可通过 `Admin Key` 调用同步接口；Functions 已允许 `https://localhost` / `capacitor://localhost` 的跨源 API 请求。需要限制来源时，可在 Pages 环境变量中设置 `CORS_ORIGIN`（多个来源用逗号分隔）。
 
 ---
