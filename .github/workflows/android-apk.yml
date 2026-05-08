@@ -3,14 +3,6 @@ name: Android APK
 on:
   workflow_dispatch:
     inputs:
-      api_base_url:
-        description: "Cloudflare Pages site URL for the sync APK /api calls, for example https://example.pages.dev"
-        required: false
-        type: string
-      public_base_url:
-        description: "Public website URL used by the sync APK when generating share links. Defaults to api_base_url."
-        required: false
-        type: string
       create_release:
         description: "Publish the APK to a GitHub Release after building."
         required: false
@@ -69,23 +61,6 @@ jobs:
             @capacitor/core@${CAPACITOR_VERSION} \
             typescript@${TYPESCRIPT_VERSION}
 
-      - name: Resolve APK cloud config
-        env:
-          INPUT_API_BASE_URL: ${{ inputs.api_base_url }}
-          INPUT_PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
-          VAR_API_BASE_URL: ${{ vars.APP_API_BASE_URL }}
-          VAR_PUBLIC_BASE_URL: ${{ vars.APP_PUBLIC_BASE_URL }}
-        run: |
-          API_BASE_URL="${INPUT_API_BASE_URL:-$VAR_API_BASE_URL}"
-          PUBLIC_BASE_URL="${INPUT_PUBLIC_BASE_URL:-$VAR_PUBLIC_BASE_URL}"
-          if [ -z "$PUBLIC_BASE_URL" ]; then
-            PUBLIC_BASE_URL="$API_BASE_URL"
-          fi
-          {
-            printf 'APP_API_BASE_URL=%s\n' "$API_BASE_URL"
-            printf 'APP_PUBLIC_BASE_URL=%s\n' "$PUBLIC_BASE_URL"
-          } >> "$GITHUB_ENV"
-
       - name: Configure Android SDK path
         run: |
           SDK_PATH="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -95,8 +70,8 @@ jobs:
         run: |
           mkdir -p build/apk-output
           APP_RUNTIME_MODE=android-app \
-            APP_API_BASE_URL="$APP_API_BASE_URL" \
-            APP_PUBLIC_BASE_URL="$APP_PUBLIC_BASE_URL" \
+            APP_API_BASE_URL= \
+            APP_PUBLIC_BASE_URL= \
             npm run build:local-web
           npx cap sync android
           cd android
@@ -134,7 +109,7 @@ jobs:
             TAG="apk-${GITHUB_RUN_NUMBER}"
           fi
           APK_DIR="build/apk-output"
-          NOTES="Debug APKs built by GitHub Actions. Includes web-2fa-sync-debug.apk with cloud sync API ${APP_API_BASE_URL:-not configured}, and web-2fa-local-debug.apk for offline-only local use."
+          NOTES="Debug APKs built by GitHub Actions. Includes web-2fa-sync-debug.apk, where the cloud URL is configured inside the app, and web-2fa-local-debug.apk for offline-only local use."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK_DIR/${SYNC_APK_NAME}" "$APK_DIR/${LOCAL_APK_NAME}" --clobber
           else
