@@ -7,10 +7,10 @@ import { isAdminAuthed } from "../../_lib/auth.js";
 export async function onRequestPost(context) {
   const { env, request } = context;
 
-  if (!env.KV_ADMIN_KEY && !env.ADMIN_KEY) {
+  if (!env.KV_ADMIN_KEY && !env.ADMIN_KEY && !env.SYNC_TOKEN) {
     return new Response(JSON.stringify({
       success: false,
-      error: "No admin key configured on server (ADMIN_KEY or KV_ADMIN_KEY required)",
+      error: "No admin key configured on server (ADMIN_KEY, SYNC_TOKEN, or KV_ADMIN_KEY required)",
     }), {
       status: 200,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Note": "admin_key_missing" },

@@ -146,11 +146,11 @@ function startShareView(data, remaining) {
     if (!shown || shown === "ERR") { toast("验证码尚未就绪", "warn"); return; }
     const ok = await copyText(shown);
     toast(ok ? "已复制验证码" : "复制失败", ok ? "ok" : "err");
-  }, { once: true });
+  });
   document.getElementById("copy-link")?.addEventListener("click", async () => {
     const ok = await copyText(location.href);
     toast(ok ? "已复制链接" : "复制失败", ok ? "ok" : "err");
-  }, { once: true });
+  });
 }
 
 function toB64url(bytes) {

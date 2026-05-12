@@ -622,6 +622,7 @@ function chooseTtl() {
             <input id="share-passcode" class="input" type="password" maxlength="128" placeholder="留空表示不设置额外口令" />
             <div class="hint">设置后，链接本身无法直接打开，需要接收方另行输入这个口令。</div>
           </div>
+          <div class="hint mt-2">管理员分享记录会保存链接恢复材料，其他已登录管理员设备可在分享页重新复制完整链接。</div>
         </div>
       `,
       footerHtml: `

@@ -18,6 +18,8 @@
 - 解锁后整个会话内有效（管理员模式 sessionStorage 标志）
 - 忘记可以改服务端环境变量重新设置
 
+> 为了管理员多设备互通，分享链接默认会把链接恢复材料保存到 `/api/sharekey`。拥有 `ADMIN_KEY` 的管理员设备可在分享页重新复制完整链接；接收方口令保护的分享只托管被口令包裹后的恢复材料。
+
 > 兼容字段：旧版 `SYNC_TOKEN` 和 `KV_ADMIN_KEY` 仍然有效，与 `ADMIN_KEY` 等价。所有 endpoint 的鉴权统一在 `functions/_lib/auth.js` 处理，使用恒时比较以降低时序攻击面。
 
 ### 🔐 Sync Secret（每个同步项目独立）

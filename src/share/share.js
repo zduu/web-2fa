@@ -56,15 +56,16 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
   if (!res.ok) { const e = new Error(`server-${res.status}`); e.status = res.status; throw e; }
 
-  // also store the share key on the server (best effort, requires token)
+  // Admin convenience: store share recovery material by default so any
+  // ADMIN_KEY-authenticated device can copy the full link later.
   try {
-    if (token) {
+    if (token && meta.storeKey !== false) {
       const createdAt = Number(meta.createdAt || Date.now());
       await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}${qs}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Token": token },
         body: JSON.stringify({
-          k: b64url(keyRaw),
+          k: password ? "" : b64url(keyRaw),
           label: meta.label || payloadObj.label || "(未命名)",
           projectName: meta.projectName || "",
           itemId: meta.itemId || item.id || "",
@@ -85,7 +86,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
 }
 
 // Share an item that is currently visible (handles both single-project and "_all_" view)
-export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "") {
+export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "", storeKey = true) {
   const isAll = state.currentProjectId === "_all_";
   const target = isAll
     ? findItemInProject(item._projectId, item.id)
@@ -102,6 +103,7 @@ export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, pass
     note,
     maxAccess,
     password,
+    storeKey,
   });
   // Write share record back to source
   if (target) {

@@ -22,6 +22,7 @@
 - 🔒 **分享仅管理员可用**：普通用户不显示分享入口，管理员可统一查看全部分享记录与访问日志
 - 📱 **分享支持离线 QR**：生成链接后会弹出二维码、链接和有效期提示，手机扫码更直接
 - 🔐 **分享口令可选**：可额外设置接收方访问口令；不设置时仍可直接通过链接访问
+- 🧰 **管理员分享互通**：管理员生成分享后会保存链接恢复材料，其他已登录管理员设备可在分享页重新复制完整链接
 - 🔳 **支持批量迁移二维码导出**：当前项目可直接导出为 `otpauth-migration://` 多张二维码，便于迁移到 Google Authenticator 等应用
 - 🧾 **管理员审计日志**：所有 API 写操作会记录最近 30 天的 method/path/status/IP 摘要/UA 摘要
 - 📷 **导入更完整**：支持手动输入、`otpauth://`、`otpauth-migration://`、Aegis 明文 JSON、Bitwarden CSV/JSON、andOTP 加密备份
@@ -232,8 +233,8 @@ DELETE /api/share/:id           # 撤销分享
 
 GET    /api/share/list          # 列出所有分享 SID（需鉴权）
 GET    /api/share/stat          # 获取分享访问统计（需鉴权）
-GET    /api/sharekey/:id        # 获取分享密钥（需鉴权）
-PUT    /api/sharekey/:id        # 存储分享密钥（需鉴权）
+GET    /api/sharekey/:id        # 获取可选托管的分享解密材料（需鉴权）
+PUT    /api/sharekey/:id        # 显式托管分享解密材料（需鉴权）
 
 GET    /api/vault/:id           # 取出密钥托管密文（需鉴权）
 PUT    /api/vault/:id           # 存放密钥托管密文（需鉴权）

@@ -17,6 +17,9 @@ export const LS_GLOBAL_TOKEN = "authenticator.v1.globalToken";
 export const LS_CURRENT_PROJECT = "authenticator.v1.currentProjectId";
 export const SS_ADMIN_UNLOCKED = "authenticator.v1.adminUnlocked";
 
+let syncProjectsSaveQueue = Promise.resolve();
+let syncProjectsSaveGeneration = 0;
+
 // state shared across modules
 export const state = {
   items: [],
@@ -76,16 +79,86 @@ async function unwrapDek(wrapped, kek) {
   return pt;
 }
 
+function isEncryptedPayload(parsed) {
+  return !!(parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.v === 2 && parsed.iv && parsed.ct);
+}
+
+async function encryptJsonPayload(value, key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const pt = new TextEncoder().encode(JSON.stringify(value));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, pt);
+  return { v: 2, iv: toB64(iv), ct: toB64(new Uint8Array(ct)) };
+}
+
+async function decryptJsonPayload(parsed, key) {
+  const iv = fromB64(parsed.iv);
+  const ct = fromB64(parsed.ct);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(plain)));
+}
+
+function normalizeSyncProjects(projects) {
+  return (Array.isArray(projects) ? projects : []).map((project) => ({
+    ...project,
+    itemsData: Array.isArray(project?.itemsData)
+      ? project.itemsData.map(ensureItemDefaults)
+      : [],
+    itemOrder: Array.isArray(project?.itemOrder) ? project.itemOrder.slice() : [],
+  }));
+}
+
+function applySyncProjectsPayload(payload, fallbackCurrentProjectId = null) {
+  const projects = Array.isArray(payload) ? payload : payload?.projects;
+  state.syncProjects = normalizeSyncProjects(projects);
+  state.currentProjectId = (Array.isArray(payload) ? fallbackCurrentProjectId : payload?.currentProjectId) || fallbackCurrentProjectId || null;
+  if (!state.currentProjectId && state.syncProjects.length) state.currentProjectId = state.syncProjects[0].id;
+
+  if (state.currentProjectId === "_all_") {
+    state.items = [];
+    for (const p of state.syncProjects) {
+      for (const it of p.itemsData || []) {
+        state.items.push({ ...it, _projectId: p.id, _projectName: p.name || "未命名" });
+      }
+    }
+    return;
+  }
+
+  const current = state.syncProjects.find((p) => p.id === state.currentProjectId);
+  if (current) state.items = current.itemsData.map((it) => ({ ...it }));
+}
+
+async function loadSyncProjectsAfterUnlock() {
+  try {
+    const raw = localStorage.getItem(LS_SYNC_PROJECTS);
+    if (!raw) {
+      state.syncProjects = [];
+      state.currentProjectId = localStorage.getItem(LS_CURRENT_PROJECT) || null;
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+    if (isEncryptedPayload(parsed)) {
+      const payload = await decryptJsonPayload(parsed, state.key);
+      applySyncProjectsPayload(payload, localStorage.getItem(LS_CURRENT_PROJECT) || null);
+      return;
+    }
+
+    // Legacy plaintext project cache. Load it once, then the caller re-saves it encrypted.
+    applySyncProjectsPayload(parsed, localStorage.getItem(LS_CURRENT_PROJECT) || null);
+  } catch {
+    state.syncProjects = [];
+    state.currentProjectId = localStorage.getItem(LS_CURRENT_PROJECT) || null;
+  }
+}
+
 export async function persist() {
-  const payload = JSON.stringify({ items: state.items });
+  const payload = { items: state.items };
   if (state.key && state.encMeta) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, state.key, new TextEncoder().encode(payload));
-    const packed = { v: 2, iv: toB64(iv), ct: toB64(new Uint8Array(ct)) };
+    const packed = await encryptJsonPayload(payload, state.key);
     localStorage.setItem(LS_KEY, JSON.stringify(packed));
     localStorage.setItem(LS_META, JSON.stringify(state.encMeta));
   } else {
-    localStorage.setItem(LS_KEY, payload);
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
     localStorage.removeItem(LS_META);
   }
 }
@@ -137,6 +210,8 @@ export async function tryUnlock(password) {
       const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, ct);
       const txt = new TextDecoder().decode(new Uint8Array(plain));
       state.items = (JSON.parse(txt).items || []).map(ensureItemDefaults);
+      await loadSyncProjectsAfterUnlock();
+      try { await saveSyncProjects(); } catch {}
       state.unlocked = true;
       return true;
     }
@@ -160,6 +235,7 @@ export async function tryUnlock(password) {
     }
     const parsed = JSON.parse(txt);
     state.items = (parsed.items || []).map(ensureItemDefaults);
+    await loadSyncProjectsAfterUnlock();
     state.unlocked = true;
     // 自动迁移到 v2（同时升级到默认迭代次数）
     try { await setMasterPassword(password); } catch {}
@@ -187,6 +263,7 @@ export async function setMasterPassword(password) {
     // 改主密码会清除旧 recovery
   };
   await persist();
+  await saveSyncProjects();
 }
 
 export async function clearMasterPassword() {
@@ -194,6 +271,7 @@ export async function clearMasterPassword() {
   state.dekRaw = null;
   state.encMeta = null;
   await persist();
+  await saveSyncProjects();
 }
 
 // 5.7 生成恢复码（4 字符一组，共 8 组 = 32 字符 base32）
@@ -305,6 +383,8 @@ export async function unlockWithRecoveryCode(code) {
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, ct);
     const txt = new TextDecoder().decode(new Uint8Array(plain));
     state.items = (JSON.parse(txt).items || []).map(ensureItemDefaults);
+    await loadSyncProjectsAfterUnlock();
+    try { await saveSyncProjects(); } catch {}
     state.unlocked = true;
     return true;
   } catch {
@@ -334,6 +414,8 @@ export async function unlockWithPasskey() {
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, state.key, ct);
     const txt = new TextDecoder().decode(new Uint8Array(plain));
     state.items = (JSON.parse(txt).items || []).map(ensureItemDefaults);
+    await loadSyncProjectsAfterUnlock();
+    try { await saveSyncProjects(); } catch {}
     state.unlocked = true;
     return { ok: true };
   } catch (e) {
@@ -347,9 +429,18 @@ export async function unlockWithPasskey() {
 // ---------- sync projects persistence ----------
 export function loadSyncProjects() {
   try {
-    const projects = JSON.parse(localStorage.getItem(LS_SYNC_PROJECTS) || "[]");
-    state.syncProjects = projects;
-    state.currentProjectId = localStorage.getItem(LS_CURRENT_PROJECT) || null;
+    if (localStorage.getItem(LS_META)) {
+      state.syncProjects = [];
+      state.currentProjectId = null;
+      return;
+    }
+    const parsed = JSON.parse(localStorage.getItem(LS_SYNC_PROJECTS) || "[]");
+    if (isEncryptedPayload(parsed)) {
+      state.syncProjects = [];
+      state.currentProjectId = null;
+      return;
+    }
+    applySyncProjectsPayload(parsed, localStorage.getItem(LS_CURRENT_PROJECT) || null);
   } catch {
     state.syncProjects = [];
     state.currentProjectId = null;
@@ -357,12 +448,45 @@ export function loadSyncProjects() {
 }
 
 export function saveSyncProjects() {
-  localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(state.syncProjects));
+  const hasMaster = !!(state.encMeta || localStorage.getItem(LS_META));
+  if (hasMaster && !state.key) {
+    return Promise.resolve();
+  }
+
+  const snapshot = {
+    projects: normalizeSyncProjects(state.syncProjects),
+    currentProjectId: state.currentProjectId || null,
+  };
+  const generation = ++syncProjectsSaveGeneration;
+
+  if (state.key && state.encMeta) {
+    const key = state.key;
+    syncProjectsSaveQueue = syncProjectsSaveQueue.catch(() => {}).then(async () => {
+      const packed = await encryptJsonPayload(snapshot, key);
+      if (generation !== syncProjectsSaveGeneration) return;
+      localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(packed));
+      localStorage.removeItem(LS_CURRENT_PROJECT);
+    });
+    return syncProjectsSaveQueue;
+  }
+
+  localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(snapshot.projects));
   if (state.currentProjectId) {
     localStorage.setItem(LS_CURRENT_PROJECT, state.currentProjectId);
   } else {
     localStorage.removeItem(LS_CURRENT_PROJECT);
   }
+  return Promise.resolve();
+}
+
+export function lockLocalData() {
+  if (!state.key && !state.encMeta && !localStorage.getItem(LS_META)) return;
+  state.key = null;
+  state.dekRaw = null;
+  state.unlocked = false;
+  state.items = [];
+  state.syncProjects = [];
+  state.currentProjectId = null;
 }
 
 export function getCurrentProject() {

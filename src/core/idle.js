@@ -4,7 +4,7 @@
 // - visibilitychange=hidden 启动后台计时器，N 分钟内未回 visible 也触发锁定
 // - 配置项：idleLockMinutes（>0 启用，<=0 关闭）；hiddenLockMinutes（同）
 
-import { state, saveAdminUnlocked, saveGlobalToken } from "./storage.js";
+import { lockLocalData, state, saveAdminUnlocked, saveGlobalToken } from "./storage.js";
 
 export const LS_IDLE_LOCK = "authenticator.v1.idleLockMinutes";
 export const LS_HIDDEN_LOCK = "authenticator.v1.hiddenLockMinutes";
@@ -90,9 +90,7 @@ function triggerLock(reason) {
   // 仅当本地数据是加密保存的（state.key 存在）时才清空内存中的 key 与 items
   // 否则普通用户没有主密码加密，items 也不应被清空
   if (state.key) {
-    state.key = null;
-    state.unlocked = false;
-    state.items = [];
+    lockLocalData();
   }
   hiddenAt = 0;
   lastActive = Date.now();
