@@ -4,10 +4,11 @@
 import { state, getCurrentProject, saveSyncProjects, persist } from "../core/storage.js";
 import { normalizeProjectItemOrder } from "../sync/projects.js";
 import { codeForItem, formatCode, secondsLeft, buildOtpAuthUrl } from "../core/totp.js";
+import { renderQrSvg } from "../core/qrgen.js";
 import { createRing } from "./ring.js";
 import { createAvatar } from "./avatar.js";
-import { toast, copyText, escapeHtml } from "./toast.js";
-import { actionSheet, confirmDialog } from "./modal.js";
+import { toast, copyText, escapeHtml, downloadBlob, sanitizeFilePart } from "./toast.js";
+import { actionSheet, openModal } from "./modal.js";
 import { isLocalOnlyApp } from "../core/runtime.js";
 
 const cardMap = new Map(); // id -> { node, ring, item }
@@ -479,6 +480,7 @@ async function openCardSheet(item) {
       const ok = await copyText(buildOtpAuthUrl(item));
       toast(ok ? "已复制 otpauth 链接" : "复制失败", ok ? "ok" : "err");
     }},
+    { label: "显示扫码导入二维码", icon: "🔳", onClick: () => openSingleOtpAuthQr(item) },
   ];
   if (typeof onEdit === "function") {
     actions.push({ label: "编辑账户", icon: "✏️", onClick: () => onEdit(item) });
@@ -490,6 +492,69 @@ async function openCardSheet(item) {
     if (typeof onDelete === "function") onDelete(item);
   }});
   await actionSheet({ title: `${item.issuer || ""} ${item.account ? "· " + item.account : ""}`.trim() || "操作", actions });
+}
+
+function openSingleOtpAuthQr(item) {
+  const url = buildOtpAuthUrl(item);
+  if (!url) {
+    toast("无法生成二维码", "err");
+    return;
+  }
+
+  let svg = "";
+  try {
+    svg = renderQrSvg(url, { pixelSize: 7 });
+  } catch (e) {
+    console.error(e);
+    toast("二维码生成失败", "err");
+    return;
+  }
+
+  const accountName = formatItemName(item);
+  const filePart = sanitizeFilePart(accountName || item.id || "account");
+  openModal({
+    title: "扫码导入二维码",
+    bodyHtml: `
+      <div class="migration-qr-card">
+        <div class="migration-qr-head">
+          <div>
+            <div class="migration-qr-title">${escapeHtml(accountName)}</div>
+            <div class="migration-qr-sub">1 条账户 · 标准 otpauth 格式</div>
+          </div>
+        </div>
+        <div class="migration-qr-stage center" id="single-otpauth-qr"></div>
+      </div>
+    `,
+    footerHtml: `
+      <div class="btn-row right">
+        <button class="btn ghost" data-act="copy">复制 URI</button>
+        <button class="btn ghost" data-act="download">下载 SVG</button>
+        <button class="btn" data-act="close">完成</button>
+      </div>
+    `,
+    onMount: (root, close) => {
+      const stage = root.querySelector("#single-otpauth-qr");
+      if (stage) {
+        stage.innerHTML = svg;
+        stage.querySelector("svg")?.setAttribute("aria-label", `${accountName} 的验证器导入二维码`);
+      }
+      root.querySelector('[data-act="copy"]')?.addEventListener("click", async () => {
+        const ok = await copyText(url);
+        toast(ok ? "已复制 otpauth URI" : "复制失败", ok ? "ok" : "err");
+      });
+      root.querySelector('[data-act="download"]')?.addEventListener("click", () => {
+        downloadBlob(
+          `authenticator-import-${filePart}.svg`,
+          new Blob([svg], { type: "image/svg+xml;charset=utf-8" })
+        );
+      });
+      root.querySelector('[data-act="close"]')?.addEventListener("click", () => close("done"));
+    },
+  });
+}
+
+function formatItemName(item) {
+  return `${item.issuer || ""}${item.account ? " · " + item.account : ""}`.trim() || "未命名账户";
 }
 
 async function advanceHotp(item, node) {

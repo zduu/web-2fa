@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   base32Decode,
   base32Encode,
+  buildOtpAuthUrl,
   buildMigrationUrl,
   buildMigrationUrls,
   formatCode,
@@ -196,6 +197,23 @@ describe("otpauth parsing", () => {
         period: 45,
         counter: 0,
       });
+  });
+
+  it("builds a single-account otpauth URL for QR import", () => {
+    const item = {
+      type: "totp",
+      issuer: "Demo",
+      account: "solo@example.com",
+      secret: base32Encode(asciiBytes("single-account-secret")),
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+    };
+
+    expect(parseOtpAuth(buildOtpAuthUrl(item))).toEqual({
+      ...item,
+      counter: 0,
+    });
   });
 
   it("parses Google Authenticator migration payloads from raw data and URI form", () => {
