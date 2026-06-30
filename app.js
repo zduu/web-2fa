@@ -470,7 +470,9 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
       const qrStage = root.querySelector("#share-qr-stage");
       if (input) input.value = link;
       if (passwordInput) passwordInput.value = password;
-      if (status) status.textContent = formatShareResultStatus(label, copied, recoveryStored) + (showSecret ? "（对方可查看 Secret）" : "");
+      if (status) status.textContent = showSecret
+        ? `${formatShareResultStatus(label, copied, recoveryStored)}（对方可查看 Secret）`
+        : `${formatShareResultStatus(label, copied, recoveryStored)}（安全模式：对方只能看到当前验证码）`;
 
       const renderMeta = () => {
         const parts = [];
@@ -629,7 +631,7 @@ function chooseTtl() {
               <div>
                 <div class="text-sm" style="font-weight:600;">允许对方查看 Secret 并导入自己的验证器</div>
                 <div class="hint" style="line-height:1.5; color:var(--danger);">
-                  ⚠️ 勾选后对方能拿到完整 Secret，可导入其验证器永久使用。撤销链接也无法收回。</div>
+                  ⚠️ 仅在确实需要对方导入验证器时才勾选。勾选后才会分享完整 Secret；不勾选时默认只分享当前验证码。</div>
               </div>
             </label>
           </div>
