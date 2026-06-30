@@ -607,14 +607,9 @@ function chooseTtl() {
           <label class="row gap-2"><input type="radio" name="ttl" value="86400" /> <span>24 小时</span></label>
           <label class="row gap-2"><input type="radio" name="ttl" value="perm" /> <span>永久（高风险，不推荐）</span></label>
           <div class="field mt-2">
-            <label>最多访问次数 <span class="muted">（0 = 不限）</span></label>
-            <select id="share-max" class="input">
-              <option value="0">不限</option>
-              <option value="1">1 次（一次性，访问后立即失效）</option>
-              <option value="3">3 次</option>
-              <option value="5">5 次</option>
-              <option value="10">10 次</option>
-            </select>
+            <label>最多访问次数 <span class="muted">（留空或 0 = 不限）</span></label>
+            <input id="share-max" class="input" type="number" min="0" step="1" inputmode="numeric" placeholder="例如：1 / 3 / 10" />
+            <div class="hint">留空或填 0 表示不限；填 1 表示一次性，访问后立即失效。</div>
           </div>
           <div class="field mt-2">
             <label>备注 <span class="muted">（可选，最多 280 字，对方页面可见）</span></label>
@@ -649,7 +644,9 @@ function chooseTtl() {
         r.querySelector('[data-act="ok"]').addEventListener("click", async () => {
           const v = r.querySelector('input[name="ttl"]:checked')?.value || "default";
           const note = (r.querySelector("#share-note")?.value || "").trim();
-          const maxAccess = Number(r.querySelector("#share-max")?.value || 0) || 0;
+          const maxRaw = String(r.querySelector("#share-max")?.value || "").trim();
+          const maxParsed = Math.trunc(Number(maxRaw));
+          const maxAccess = Number.isFinite(maxParsed) ? Math.min(1_000_000, Math.max(0, maxParsed)) : 0;
           const password = (r.querySelector("#share-passcode")?.value || "").trim();
           const showSecret = r.querySelector('#share-show-secret')?.checked === true;
           if (v === "perm") {

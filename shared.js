@@ -237,6 +237,12 @@ function startLegacyShareView(data, remaining) {
   if (periodInfo) periodInfo.textContent = `周期 ${data.period || 30}s`;
   const subEl = document.querySelector(".share-head .sub");
   if (subEl) subEl.textContent = "完整模式 · 含 Secret · 可导入验证器";
+  const secretPanel = document.getElementById("secret-panel");
+  const secretInput = document.getElementById("secret-value");
+  if (secretPanel && secretInput) {
+    secretInput.value = String(data.secret || "");
+    secretPanel.style.display = secretInput.value ? "" : "none";
+  }
   if (typeof data.note === "string" && data.note.trim()) {
     const noteEl = document.getElementById("note");
     if (noteEl) {
@@ -285,6 +291,12 @@ function bindCopyActions() {
     if (!/^\d{4,10}$/.test(shown)) { toast("验证码尚未就绪或已过期", "warn"); return; }
     const ok = await copyText(shown);
     toast(ok ? "已复制验证码" : "复制失败", ok ? "ok" : "err");
+  });
+  document.getElementById("copy-secret")?.addEventListener("click", async () => {
+    const secret = document.getElementById("secret-value")?.value?.trim() || "";
+    if (!secret) { toast("Secret 不可用", "warn"); return; }
+    const ok = await copyText(secret);
+    toast(ok ? "已复制 Secret" : "复制失败", ok ? "ok" : "err");
   });
   document.getElementById("copy-link")?.addEventListener("click", async () => {
     const ok = await copyText(location.href);
