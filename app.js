@@ -2,22 +2,35 @@
 
 import {
   state, load, loadSyncProjects, loadGlobalToken, loadAdminUnlocked,
-  persist, saveSyncProjects, getCurrentProject
+  persist, saveSyncProjects, getCurrentProject,
+  ensureItemDefaults, normalizeShareRefs
 } from "./src/core/storage.js";
-import { initHome, renderHome, renderProjectBar, startTicker, setCardActions } from "./src/ui/home.js";
+import {
+  initHome,
+  renderHome,
+  renderProjectBar,
+  startTicker,
+  setCardActions,
+  formatItemName,
+  formatProjectName,
+} from "./src/ui/home.js";
 import { initDrawer, openDrawer } from "./src/ui/drawer.js";
 import { openAddModal, openEditModal } from "./src/ui/add.js";
 import { attachScanner } from "./src/ui/scanner.js";
 import { switchToProject, ensureProjectActive } from "./src/sync/projects.js";
 import { startAutoSync, scheduleAutoPush, pushProject, stopAutoSync } from "./src/sync/sync.js";
-import { shareItem } from "./src/share/share.js";
+import { deleteRemoteShareResources, formatShareResultStatus, shareItem, sharePayloadChanged } from "./src/share/share.js";
 import { toast, copyText } from "./src/ui/toast.js";
 import { confirmDialog, openModal } from "./src/ui/modal.js";
-import { ensureItemDefaults } from "./src/core/storage.js";
 import { startIdleWatcher } from "./src/core/idle.js";
 import { applyDensity } from "./src/ui/prefs.js";
 import { importFromFileHandle } from "./src/ui/import-export.js";
-import { parseOtpAuth, parseOtpAuthMigration } from "./src/core/totp.js";
+import {
+  isOtpAuthMigrationUri,
+  isOtpAuthUri,
+  parseOtpAuth,
+  parseOtpAuthMigration,
+} from "./src/core/totp.js";
 import { importFingerprint, normalizeImportedItem } from "./src/core/imports.js";
 import { initTheme } from "./src/ui/theme.js";
 import { apiUrl, canUseCloudApis, isLocalOnlyApp } from "./src/core/runtime.js";
@@ -392,20 +405,21 @@ async function handleShare(item) {
     const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "");
     const copied = await copyText(r.link);
     await showShareLinkDialog({
-      label: `${item.issuer || ""}${item.account ? " · " + item.account : ""}`.trim() || "分享",
+      label: formatItemName(item) || "分享",
       link: r.link,
       ttl: choice.ttl,
       maxAccess: choice.maxAccess || 0,
       copied,
       password: choice.password || "",
       requiresPassword: !!r.requiresPassword,
+      recoveryStored: r.recoveryStored,
     });
   } catch (e) {
     toast(`分享失败${e.status ? "：" + e.status : ""}`, "err");
   }
 }
 
-async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, password, requiresPassword }) {
+async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, password, requiresPassword, recoveryStored }) {
   let countdownTimer = null;
   const expiresAt = typeof ttl === "number" && ttl > 0 ? Date.now() + ttl * 1000 : null;
   openModal({
@@ -455,9 +469,7 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
       const qrStage = root.querySelector("#share-qr-stage");
       if (input) input.value = link;
       if (passwordInput) passwordInput.value = password;
-      if (status) status.textContent = copied
-        ? `“${label}” 的分享链接已复制，可直接扫码打开`
-        : `“${label}” 的分享链接已生成，可扫码或手动复制`;
+      if (status) status.textContent = formatShareResultStatus(label, copied, recoveryStored);
 
       const renderMeta = () => {
         const parts = [];
@@ -466,6 +478,7 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
         else parts.push("按服务端默认有效期");
         if (maxAccess > 0) parts.push(`最多 ${maxAccess} 次访问`);
         if (requiresPassword) parts.push("需访问口令");
+        if (recoveryStored === false) parts.push("其他管理员设备无法重新复制完整链接");
         if (expiry) expiry.textContent = parts.join(" · ");
       };
 
@@ -532,7 +545,7 @@ async function saveEditedItem(item, next) {
     ...item,
     ...next,
     id: item.id,
-    shares: Array.isArray(item.shares) ? item.shares : [],
+    shares: normalizeShareRefs(item.shares),
     deleted: false,
     updatedAt: Date.now(),
   });
@@ -546,7 +559,7 @@ async function saveEditedItem(item, next) {
       const r = await revokeAllShares(target);
       stat.revoked += r.revoked;
       stat.failed += r.failed.length;
-      patch.shares = Array.isArray(target.shares) ? target.shares : [];
+      patch.shares = normalizeShareRefs(target.shares);
     }
     Object.assign(target, patch);
     saveSyncProjects();
@@ -561,7 +574,7 @@ async function saveEditedItem(item, next) {
     const r = await revokeAllShares(target);
     stat.revoked += r.revoked;
     stat.failed += r.failed.length;
-    patch.shares = Array.isArray(target.shares) ? target.shares : [];
+    patch.shares = normalizeShareRefs(target.shares);
   }
   Object.assign(target, patch);
   await persist();
@@ -572,19 +585,6 @@ async function saveEditedItem(item, next) {
   }
   scheduleAutoPush();
   return stat;
-}
-
-function sharePayloadChanged(prev, next) {
-  return (
-    (prev.type || "totp") !== (next.type || "totp") ||
-    String(prev.secret || "").replace(/\s+/g, "").toUpperCase() !== String(next.secret || "").replace(/\s+/g, "").toUpperCase() ||
-    String(prev.issuer || "") !== String(next.issuer || "") ||
-    String(prev.account || "") !== String(next.account || "") ||
-    String(prev.algorithm || "SHA1").toUpperCase() !== String(next.algorithm || "SHA1").toUpperCase() ||
-    Number(prev.digits || 6) !== Number(next.digits || 6) ||
-    Number(prev.period || 30) !== Number(next.period || 30) ||
-    Number(prev.counter || 0) !== Number(next.counter || 0)
-  );
 }
 
 function chooseTtl() {
@@ -662,7 +662,7 @@ function chooseTtl() {
 async function handleDelete(item) {
   const ok = await confirmDialog({
     title: "删除账户？",
-    message: `${item.issuer || "(未命名)"} ${item.account ? "· " + item.account : ""}`,
+    message: formatItemName(item),
     danger: true,
     okText: "删除",
   });
@@ -685,7 +685,7 @@ async function handleDelete(item) {
         scope: "all",
         projectId: proj.id,
         itemId: item.id,
-        prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: Array.isArray(target.shares) ? target.shares.map(s => (typeof s === "string" ? { sid: s } : { ...s })) : [] },
+        prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: normalizeShareRefs(target.shares) },
       };
       target.deleted = true;
       target.updatedAt = Date.now();
@@ -699,7 +699,7 @@ async function handleDelete(item) {
     undoSnapshot = {
       scope: "current",
       itemId: item.id,
-      prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: Array.isArray(target.shares) ? target.shares.map(s => (typeof s === "string" ? { sid: s } : { ...s })) : [] },
+      prev: { deleted: !!target.deleted, updatedAt: Number(target.updatedAt || 0), shares: normalizeShareRefs(target.shares) },
     };
     target.deleted = true;
     target.updatedAt = Date.now();
@@ -751,15 +751,12 @@ async function revokeAllShares(item) {
   const result = { attempted: 0, revoked: 0, failed: [] };
   if (!item || !Array.isArray(item.shares) || !item.shares.length) return result;
   const token = state.globalToken;
-  const headers = token ? { "X-Token": token } : {};
   const kept = [];
-  for (const s of item.shares) {
-    const sid = typeof s === "string" ? s : s?.sid;
-    if (!sid) continue;
+  for (const s of normalizeShareRefs(item.shares)) {
+    const sid = s.sid;
     result.attempted++;
     try {
-      const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "DELETE", headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await deleteRemoteShareResources(sid, token);
       result.revoked++;
     } catch (e) {
       kept.push(s);
@@ -788,7 +785,7 @@ function updateStatusBar() {
   if (!state.unlocked) parts.push("已加密");
   if (!hasProject) parts.push("仅本地");
   else if (state.currentProjectId === "_all_") parts.push("汇总视图");
-  else if (cur) parts.push(cur.name || "项目");
+  else if (cur) parts.push(formatProjectName(cur.name));
   if (isAdmin) parts.push("管理员");
   if (typeof navigator !== "undefined" && navigator.onLine === false) parts.push("离线");
   if (Math.abs(timeDriftSec) >= 15) parts.push(`时间偏差 ${timeDriftSec > 0 ? "+" : ""}${timeDriftSec}s`);
@@ -882,10 +879,10 @@ async function handleShareTargetIfAny() {
   const candidates = [params.get("text"), params.get("url"), params.get("title")].filter(Boolean);
   let items = [];
   for (const raw of candidates) {
-    if (raw.startsWith("otpauth://")) {
+    if (isOtpAuthUri(raw)) {
       const it = parseOtpAuth(raw);
       if (it && it.secret) items.push(it);
-    } else if (raw.startsWith("otpauth-migration://")) {
+    } else if (isOtpAuthMigrationUri(raw)) {
       const arr = parseOtpAuthMigration(raw);
       if (arr.length) items.push(...arr);
     }
