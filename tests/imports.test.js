@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { importFingerprint, normalizeImportedItem } from "../src/core/imports.js";
+import { importFingerprint, normalizeImportedItem, normalizeImportedPinned } from "../src/core/imports.js";
 
 describe("normalizeImportedItem", () => {
   afterEach(() => {
@@ -14,7 +14,7 @@ describe("normalizeImportedItem", () => {
     expect(normalizeImportedItem({
       issuer: " GitHub ",
       account: " me@example.com ",
-      secret: " jbsw y3dp ",
+      secret: " jbsw y3dp==== ",
       algorithm: "sha512",
       digits: "8",
       period: "45",
@@ -35,6 +35,46 @@ describe("normalizeImportedItem", () => {
       note: "",
       shares: [],
     });
+  });
+
+  it("normalizes invalid OTP parameters on import", () => {
+    expect(normalizeImportedItem({
+      type: "steam",
+      secret: "jbsw y3dp",
+      algorithm: "md5",
+      digits: "abc",
+      period: "0",
+      counter: "-10",
+    })).toMatchObject({
+      type: "totp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 5,
+      counter: 0,
+    });
+  });
+
+  it("parses imported pinned flags explicitly instead of truthifying strings", () => {
+    expect(normalizeImportedPinned(true)).toBe(true);
+    expect(normalizeImportedPinned(1)).toBe(true);
+    expect(normalizeImportedPinned(" true ")).toBe(true);
+    expect(normalizeImportedPinned("yes")).toBe(true);
+    expect(normalizeImportedPinned("1")).toBe(true);
+    expect(normalizeImportedPinned(false)).toBe(false);
+    expect(normalizeImportedPinned(0)).toBe(false);
+    expect(normalizeImportedPinned("false")).toBe(false);
+    expect(normalizeImportedPinned("0")).toBe(false);
+    expect(normalizeImportedPinned("")).toBe(false);
+
+    expect(normalizeImportedItem({
+      secret: "JBSWY3DP",
+      pinned: "false",
+    })).toMatchObject({ pinned: false });
+    expect(normalizeImportedItem({
+      secret: "JBSWY3DP",
+      pinned: "1",
+    })).toMatchObject({ pinned: true });
   });
 });
 
@@ -76,5 +116,28 @@ describe("importFingerprint", () => {
       account: "me@example.com",
       counter: 30,
     }));
+  });
+
+  it("uses normalized OTP parameters for duplicate detection", () => {
+    const a = importFingerprint({
+      type: "totp",
+      secret: "JBSWY3DP",
+      issuer: "GitHub",
+      account: "me@example.com",
+      algorithm: "md5",
+      digits: "abc",
+      period: "0",
+    });
+    const b = importFingerprint({
+      type: "totp",
+      secret: "JBSWY3DP",
+      issuer: "GitHub",
+      account: "me@example.com",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 5,
+    });
+
+    expect(a).toBe(b);
   });
 });

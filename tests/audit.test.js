@@ -27,13 +27,17 @@ describe("writeAuditLog", () => {
 
     await writeAuditLog(
       { AUTH_KV: { put } },
-      new Request("https://example.com/api/share/demo?foo=1", {
+      {
+        url: "https://example.com/api/share/demo?foo=secret&foo=again&token=super-secret",
         method: "DELETE",
         headers: {
-          "CF-Connecting-IP": "203.0.113.9",
-          "User-Agent": "Vitest Browser UA",
+          get(name) {
+            if (name === "CF-Connecting-IP") return "203.0.113.9";
+            if (name === "User-Agent") return " Vitest\u0000 Browser\nUA\t ";
+            return null;
+          },
         },
-      }),
+      },
       new Response(null, { status: 401 }),
     );
 
@@ -44,10 +48,12 @@ describe("writeAuditLog", () => {
     expect(JSON.parse(raw)).toMatchObject({
       ts: 1710000000000,
       method: "DELETE",
-      path: "/api/share/demo?foo=1",
+      path: "/api/share/demo?foo=redacted&token=redacted",
       status: 401,
       uaSample: "Vitest Browser UA",
     });
+    expect(raw).not.toContain("super-secret");
+    expect(raw).not.toContain("again");
     expect(JSON.parse(raw).ipSummary).toMatch(/^[0-9a-f]{12}$/);
   });
 });

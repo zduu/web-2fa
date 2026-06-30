@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   decryptAndParseAndOtpBackup,
   detectMigrationFile,
+  isLikelyAndOtpEncryptedBackup,
   parseAegisJson,
+  parseAndOtpJson,
   parseBitwardenCsv,
+  parseBitwardenJson,
 } from "../src/core/migration-formats.js";
 
 describe("parseAegisJson", () => {
@@ -35,14 +38,21 @@ describe("parseAegisJson", () => {
             name: "ignored",
             issuer: "Steam",
             info: { secret: "ABCDEFGHIJKLMNOP", algo: "SHA1", digits: 5, period: 30 }
+          },
+          {
+            type: "HOTP",
+            name: "ops@example.com",
+            issuer: "PagerDuty",
+            favorite: "false",
+            info: { secret: "jbsw-y3dp====", algo: "sha-256", digits: 7, counter: 9 }
           }
         ]
       }
     });
 
     expect(result.format).toBe("Aegis JSON");
-    expect(result.total).toBe(2);
-    expect(result.imported).toBe(1);
+    expect(result.total).toBe(3);
+    expect(result.imported).toBe(2);
     expect(result.skipped).toBe(1);
     expect(result.warnings[0]).toContain("steam");
     expect(result.items[0]).toMatchObject({
@@ -55,6 +65,53 @@ describe("parseAegisJson", () => {
       digits: 8,
       period: 45,
     });
+    expect(result.items[1]).toMatchObject({
+      type: "hotp",
+      issuer: "PagerDuty",
+      account: "ops@example.com",
+      pinned: false,
+      secret: "JBSWY3DP",
+      algorithm: "SHA256",
+      digits: 7,
+      counter: 9,
+    });
+  });
+});
+
+describe("parseAndOtpJson", () => {
+  it("normalizes grouped secrets and case-insensitive HOTP fields", () => {
+    const result = parseAndOtpJson([
+      {
+        secret: "jbsw y3dp====",
+        issuer: "GitLab",
+        label: "dev@example.com",
+        digits: "8",
+        counter: "12",
+        type: "hotp",
+        algorithm: "sha512"
+      },
+      {
+        secret: "ABCDEFGHIJKLMNOP",
+        issuer: "Steam",
+        label: "ignored",
+        type: "steam"
+      }
+    ]);
+
+    expect(result.format).toBe("andOTP JSON");
+    expect(result.total).toBe(2);
+    expect(result.imported).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.warnings[0]).toContain("steam");
+    expect(result.items[0]).toMatchObject({
+      type: "hotp",
+      issuer: "GitLab",
+      account: "dev@example.com",
+      secret: "JBSWY3DP",
+      algorithm: "SHA512",
+      digits: 8,
+      counter: 12,
+    });
   });
 });
 
@@ -63,7 +120,7 @@ describe("parseBitwardenCsv", () => {
     const csv = [
       "folder,favorite,type,name,notes,login_username,login_password,login_totp",
       'Work,1,login,GitHub,primary,me@example.com,pass123,JBSWY3DP',
-      'Personal,0,login,Google,,me@gmail.com,,"otpauth://totp/Google:me@gmail.com?secret=NB2W45DFOIZA====&issuer=Google&algorithm=SHA256&digits=8&period=60"',
+      'Personal,0,login,Google,,me@gmail.com,," OTPAUTH://TOTP/Google:me@gmail.com?secret=nb2w 45df oiza====&issuer=Google&algorithm=SHA256&digits=8&period=60 "',
       'Other,0,login,NoOTP,n/a,foo@example.com,,',
     ].join("\n");
 
@@ -87,10 +144,43 @@ describe("parseBitwardenCsv", () => {
     expect(result.items[1]).toMatchObject({
       issuer: "Google",
       account: "me@gmail.com",
-      secret: "NB2W45DFOIZA====",
+      secret: "NB2W45DFOIZA",
       algorithm: "SHA256",
       digits: 8,
       period: 60,
+    });
+  });
+});
+
+describe("parseBitwardenJson", () => {
+  it("normalizes string favorite flags explicitly", () => {
+    const result = parseBitwardenJson({
+      encrypted: false,
+      items: [
+        {
+          name: "GitHub",
+          favorite: "false",
+          login: { username: "me@example.com", totp: "JBSWY3DP" },
+        },
+        {
+          name: "Google",
+          favorite: "yes",
+          login: { username: "me@gmail.com", totp: "otpauth://totp/Google:me@gmail.com?secret=NB2W45DFOIZA&issuer=Google" },
+        },
+      ],
+    });
+
+    expect(result.format).toBe("Bitwarden JSON");
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toMatchObject({
+      issuer: "GitHub",
+      account: "me@example.com",
+      pinned: false,
+    });
+    expect(result.items[1]).toMatchObject({
+      issuer: "Google",
+      account: "me@gmail.com",
+      pinned: true,
     });
   });
 });
@@ -135,7 +225,15 @@ describe("decryptAndParseAndOtpBackup", () => {
       }
     ]);
     const bytes = await buildAndOtpBackup(payload, password, 12000);
-    const result = await decryptAndParseAndOtpBackup(bytes, password);
+    const padded = new Uint8Array(bytes.length + 4);
+    padded.set([222, 173], 0);
+    padded.set(bytes, 2);
+    padded.set([190, 239], bytes.length + 2);
+    const view = new DataView(padded.buffer, 2, bytes.length);
+
+    expect(isLikelyAndOtpEncryptedBackup(view, "andotp-backup.bin")).toBe(true);
+
+    const result = await decryptAndParseAndOtpBackup(view, password);
 
     expect(result.format).toBe("andOTP 加密备份");
     expect(result.items).toHaveLength(1);

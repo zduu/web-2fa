@@ -8,6 +8,15 @@ import {
   buildMigrationUrls,
   formatCode,
   hotp,
+  isOtpAuthMigrationUri,
+  isOtpAuthUri,
+  normalizeHotpCounter,
+  normalizeOtpAlgorithm,
+  normalizeOtpDigits,
+  normalizeOtpPayload,
+  normalizeOtpPeriod,
+  normalizeOtpSecret,
+  normalizeOtpType,
   parseOtpAuth,
   parseOtpAuthMigration,
   totp,
@@ -117,6 +126,15 @@ describe("base32", () => {
     expect(base32Decode(base32Encode(bytes))).toEqual(bytes);
   });
 
+  it("encodes ArrayBuffer views using their byte range", () => {
+    const bytes = new Uint8Array([9, 10, 11, 12, 13, 14]);
+    const view = new DataView(bytes.buffer, 2, 3);
+
+    expect(base32Encode(view)).toBe(base32Encode(new Uint8Array([11, 12, 13])));
+    expect(base32Decode(base32Encode(view))).toEqual(new Uint8Array([11, 12, 13]));
+    expect(base32Decode(base32Encode(bytes.buffer))).toEqual(bytes);
+  });
+
   it("ignores padding and whitespace", () => {
     expect(base32Decode("JBSW Y3DP====")).toEqual(asciiBytes("Hello"));
   });
@@ -185,6 +203,91 @@ describe("hotp/totp vectors", () => {
 });
 
 describe("otpauth parsing", () => {
+  const originalBtoa = globalThis.btoa;
+  const originalAtob = globalThis.atob;
+
+  afterEach(() => {
+    if (originalBtoa === undefined) delete globalThis.btoa;
+    else globalThis.btoa = originalBtoa;
+    if (originalAtob === undefined) delete globalThis.atob;
+    else globalThis.atob = originalAtob;
+  });
+
+  it("normalizes OTP numeric and algorithm parameters", () => {
+    expect(normalizeOtpAlgorithm("SHA-256")).toBe("SHA256");
+    expect(normalizeOtpAlgorithm("md5")).toBe("SHA1");
+    expect(normalizeOtpDigits("abc")).toBe(6);
+    expect(normalizeOtpDigits("2")).toBe(4);
+    expect(normalizeOtpDigits("99")).toBe(10);
+    expect(normalizeOtpPeriod("3")).toBe(5);
+    expect(normalizeHotpCounter("-7")).toBe(0);
+    expect(normalizeOtpSecret(" jbsw-y3dp==== ")).toBe("JBSWY3DP");
+    expect(normalizeOtpType("HOTP")).toBe("hotp");
+    expect(normalizeOtpType("steam")).toBe("totp");
+  });
+
+  it("normalizes OTP payload fields for semantic comparisons", () => {
+    expect(normalizeOtpPayload({
+      type: "totp",
+      secret: " jbsw y3dp==== ",
+      algorithm: "SHA-1",
+      digits: "2",
+      period: "3",
+      counter: "99",
+    })).toEqual({
+      type: "totp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA1",
+      digits: 4,
+      period: 5,
+    });
+
+    expect(normalizeOtpPayload({
+      type: "HOTP",
+      secret: "jbsw y3dp",
+      algorithm: "sha_512",
+      digits: "99",
+      period: "60",
+      counter: "-1",
+    })).toEqual({
+      type: "hotp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA512",
+      digits: 10,
+      counter: 0,
+    });
+  });
+
+  it("builds HOTP otpauth URLs from uppercase item types", () => {
+    const url = buildOtpAuthUrl({
+      type: "HOTP",
+      issuer: "Demo",
+      account: "counter@example.com",
+      secret: "jbsw-y3dp====",
+      algorithm: "sha-256",
+      digits: 8,
+      counter: 12,
+    });
+
+    expect(url).toContain("otpauth://hotp/");
+    expect(parseOtpAuth(url)).toMatchObject({
+      type: "hotp",
+      issuer: "Demo",
+      account: "counter@example.com",
+      secret: "JBSWY3DP",
+      algorithm: "SHA256",
+      digits: 8,
+      counter: 12,
+    });
+  });
+
+  it("detects otpauth uri types with whitespace and case normalization", () => {
+    expect(isOtpAuthUri("  OTPAUTH://TOTP/account?secret=JBSWY3DP  ")).toBe(true);
+    expect(isOtpAuthMigrationUri("  OTPAUTH-MIGRATION://offline?data=abc  ")).toBe(true);
+    expect(isOtpAuthUri("otpauth-migration://offline?data=abc")).toBe(false);
+    expect(isOtpAuthMigrationUri("otpauth://totp/account?secret=JBSWY3DP")).toBe(false);
+  });
+
   it("parses single-account otpauth urls", () => {
     expect(parseOtpAuth("otpauth://totp/GitHub:me%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=sha256&digits=8&period=45"))
       .toEqual({
@@ -199,12 +302,43 @@ describe("otpauth parsing", () => {
       });
   });
 
+  it("normalizes pasted otpauth urls and preserves account labels with colons", () => {
+    expect(parseOtpAuth("  OTPAUTH://TOTP/%20Example%20:%20team:prod%20?secret=jbsw y3dp====&issuer=%20Example%20  "))
+      .toEqual({
+        type: "totp",
+        issuer: "Example",
+        account: "team:prod",
+        secret: "JBSWY3DP",
+        algorithm: "SHA1",
+        digits: 6,
+        period: 30,
+        counter: 0,
+      });
+  });
+
+  it("rejects unsupported otpauth urls", () => {
+    expect(parseOtpAuth("otpauth://steam/account?secret=JBSWY3DP")).toBeNull();
+    expect(parseOtpAuth("otpauth://totp/account")).toBeNull();
+  });
+
+  it("defaults invalid otpauth parameters to supported runtime values", () => {
+    expect(parseOtpAuth("otpauth://hotp/Bad?secret=JBSWY3DP&algorithm=md5&digits=abc&period=0&counter=-3"))
+      .toMatchObject({
+        type: "hotp",
+        secret: "JBSWY3DP",
+        algorithm: "SHA1",
+        digits: 6,
+        period: 5,
+        counter: 0,
+      });
+  });
+
   it("builds a single-account otpauth URL for QR import", () => {
     const item = {
       type: "totp",
-      issuer: "Demo",
-      account: "solo@example.com",
-      secret: base32Encode(asciiBytes("single-account-secret")),
+      issuer: " Demo ",
+      account: " solo@example.com ",
+      secret: `${base32Encode(asciiBytes("single-account-secret"))}====`,
       algorithm: "SHA1",
       digits: 6,
       period: 30,
@@ -212,6 +346,9 @@ describe("otpauth parsing", () => {
 
     expect(parseOtpAuth(buildOtpAuthUrl(item))).toEqual({
       ...item,
+      issuer: "Demo",
+      account: "solo@example.com",
+      secret: normalizeOtpSecret(item.secret),
       counter: 0,
     });
   });
@@ -222,16 +359,16 @@ describe("otpauth parsing", () => {
     const data = buildMigrationData([
       {
         secretBytes: itemASecret,
-        name: "alice@example.com",
-        issuer: "GitHub",
+        name: " alice@example.com ",
+        issuer: " GitHub ",
         algorithm: 1,
         digits: 1,
         type: 2,
       },
       {
         secretBytes: itemBSecret,
-        name: "backup@example.com",
-        issuer: "Example",
+        name: " backup@example.com ",
+        issuer: " Example ",
         algorithm: 3,
         digits: 2,
         type: 1,
@@ -263,14 +400,15 @@ describe("otpauth parsing", () => {
 
     expect(parseOtpAuthMigration(data)).toEqual(expected);
     expect(parseOtpAuthMigration(`otpauth-migration://offline?data=${data}`)).toEqual(expected);
+    expect(parseOtpAuthMigration(`  OTPAUTH-MIGRATION://offline?data=${data}  `)).toEqual(expected);
   });
 
   it("builds Google Authenticator migration URLs that round-trip through the parser", () => {
     const items = [
       {
         type: "totp",
-        issuer: "GitHub",
-        account: "alice@example.com",
+        issuer: " GitHub ",
+        account: " alice@example.com ",
         secret: base32Encode(asciiBytes("12345678901234567890")),
         algorithm: "SHA1",
         digits: 6,
@@ -278,8 +416,8 @@ describe("otpauth parsing", () => {
       },
       {
         type: "hotp",
-        issuer: "Example",
-        account: "backup@example.com",
+        issuer: " Example ",
+        account: " backup@example.com ",
         secret: base32Encode(asciiBytes("abcdefghijklmnopqrstuvwxyz123456")),
         algorithm: "SHA512",
         digits: 8,
@@ -375,6 +513,62 @@ describe("otpauth parsing", () => {
     expect(dataRaw).not.toMatch(/[+/]/);
     // 反解出来后能 round-trip
     expect(parseOtpAuthMigration(url)).toHaveLength(5);
+  });
+
+  it("round-trips migration URLs without browser base64 globals", () => {
+    delete globalThis.btoa;
+    delete globalThis.atob;
+
+    const items = [{
+      type: "totp",
+      issuer: "Demo",
+      account: "no-browser-base64@example.com",
+      secret: base32Encode(asciiBytes("migration-base64-fallback")),
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+    }];
+
+    const url = buildMigrationUrl(items);
+    expect(parseOtpAuthMigration(url)).toMatchObject([{
+      issuer: "Demo",
+      account: "no-browser-base64@example.com",
+      secret: items[0].secret,
+    }]);
+  });
+
+  it("normalizes migration chunk and batch metadata integers", () => {
+    const items = Array.from({ length: 12 }, (_, i) => ({
+      type: "totp",
+      issuer: "Demo",
+      account: `user-${i}@example.com`,
+      secret: base32Encode(asciiBytes(`chunk-secret-${i}`)),
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+    }));
+
+    const defaulted = buildMigrationUrls(items, "bad");
+    expect(defaulted).toHaveLength(2);
+    expect(parseOtpAuthMigration(defaulted[0])).toHaveLength(10);
+    expect(parseOtpAuthMigration(defaulted[1])).toHaveLength(2);
+
+    const truncated = buildMigrationUrls(items, "2.9");
+    expect(truncated).toHaveLength(6);
+    expect(parseOtpAuthMigration(truncated[0])).toHaveLength(2);
+
+    const metaUrl = buildMigrationUrl(items.slice(0, 1), {
+      version: "bad",
+      batchSize: "2.9",
+      batchIndex: "1.9",
+      batchId: "1e999",
+    });
+    expect(extractMigrationMeta(metaUrl)).toMatchObject({
+      version: 1,
+      batchSize: 2,
+      batchIndex: 1,
+      batchId: 0,
+    });
   });
 });
 
