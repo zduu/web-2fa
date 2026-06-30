@@ -3,6 +3,7 @@ const RESERVED_KV_PREFIXES = [
   "syncbak:",
   "synctomb:",
   "share:",
+  "sharecode:",
   "sharekey:",
   "sharestat:",
   "vault:",

@@ -653,7 +653,7 @@ function chooseTtl() {
           if (v === "perm") {
             const ok = await confirmDialog({
               title: "确认永久分享？",
-              message: `永久分享会${showSecret ? "长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret" : "允许对方持续获取验证码"}。确定继续？`,
+              message: `永久分享会${showSecret ? "长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret" : "让链接在首次打开前长期有效；打开后仅显示当期验证码，不会继续生成后续验证码"}。确定继续？`,
               danger: true,
               okText: "仍然分享",
             });

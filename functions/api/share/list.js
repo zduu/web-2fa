@@ -10,21 +10,27 @@ export async function onRequestGet(context) {
   if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
   try {
     const out = [];
+    const seen = new Set();
     let cursor;
-    do {
-      if (!env.AUTH_KV || !env.AUTH_KV.list) {
-        return new Response(JSON.stringify({ sids: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Note": "kv-missing" },
-        });
-      }
-      const res = await env.AUTH_KV.list({ prefix: "share:", cursor });
-      for (const k of res.keys) {
-        const sid = normalizeKvSuffix(k.name, "share:");
-        if (sid) out.push(sid);
-      }
-      cursor = res.list_complete ? undefined : res.cursor;
-    } while (cursor);
+    if (!env.AUTH_KV || !env.AUTH_KV.list) {
+      return new Response(JSON.stringify({ sids: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Note": "kv-missing" },
+      });
+    }
+    for (const prefix of ["share:", "sharecode:"]) {
+      cursor = undefined;
+      do {
+        const res = await env.AUTH_KV.list({ prefix, cursor });
+        for (const k of res.keys) {
+          const sid = normalizeKvSuffix(k.name, prefix);
+          if (!sid || seen.has(sid)) continue;
+          seen.add(sid);
+          out.push(sid);
+        }
+        cursor = res.list_complete ? undefined : res.cursor;
+      } while (cursor);
+    }
     return new Response(JSON.stringify({ sids: out }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },

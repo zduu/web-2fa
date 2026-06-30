@@ -98,6 +98,8 @@ describe("share password protection", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toContain("/api/share-code/");
+    expect(result.link).toContain("#ck=");
+    expect(result.link).not.toContain("#k=");
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toContain("/api/sharekey/");
     const body = JSON.parse(init.body);
@@ -108,6 +110,7 @@ describe("share password protection", () => {
     expect(body.issuer).toBe("GitHub");
     expect(body.account).toBe("me@example.com");
     expect(body.requiresPassword).toBe(false);
+    expect(body.showSecret).toBe(false);
     expect(result.recoveryStored).toBe(true);
   });
 
@@ -366,12 +369,31 @@ describe("share password protection", () => {
       createdAt: 42,
       ttl: "default",
       requiresPassword: false,
+      showSecret: true,
       protectedBundle: {
         s: "salt",
         iv: "iv",
         wk: "wrapped",
         iter: 200000,
       },
+    });
+  });
+
+  it("preserves explicit safe-share recovery metadata", async () => {
+    state.globalToken = "admin-token";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      k: "share-key",
+      label: "GitHub",
+      requiresPassword: false,
+      showSecret: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await expect(fetchSharedMeta("sid-a")).resolves.toMatchObject({
+      sid: "sid-a",
+      k: "share-key",
+      label: "GitHub",
+      requiresPassword: false,
+      showSecret: false,
     });
   });
 

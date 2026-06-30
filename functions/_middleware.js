@@ -1,8 +1,8 @@
 // 全站访问门 (ACCESS_GATE)
 // - 未配置 gate 时直通
 // - 配置 gate 时：所有 /api/* 需要 cf_gate cookie 通过；
-//   但 /api/share GET/HEAD、/api/gate、shared.html 这种公开链路放行；
-//   /api/share PUT/DELETE、/api/sharekey、/api/vault、/api/sync* 允许 ADMIN_KEY/SYNC_TOKEN 直通；
+//   但 /api/share GET/HEAD、/api/share-code GET/HEAD、/api/gate、shared.html 这种公开链路放行；
+//   /api/share、/api/share-code 写入、/api/sharekey、/api/vault、/api/sync* 允许 ADMIN_KEY/SYNC_TOKEN 直通；
 //   /api/admin/* 允许 ADMIN_KEY/SYNC_TOKEN/KV_ADMIN_KEY 直通
 
 import { isAdminAuthed, isAuthed, timingSafeEqualString } from "./_lib/auth.js";
@@ -38,6 +38,7 @@ export const onRequest = async (ctx) => {
     "/shared.html",
     "/shared.js",
     "/api/share/",
+    "/api/share-code/",
     "/manifest.webmanifest",
     "/assets/icons/",
     "/styles.css",
@@ -46,7 +47,7 @@ export const onRequest = async (ctx) => {
   ];
   if (allowPrefixes.some((p) => path.startsWith(p))) {
     // share 路径下还要在下面做写鉴权
-    if (!path.startsWith("/api/share/")) {
+    if (!path.startsWith("/api/share/") && !path.startsWith("/api/share-code/")) {
       return await runNext();
     }
   }
@@ -73,6 +74,13 @@ export const onRequest = async (ctx) => {
     }
     // share GET/HEAD 公开；PUT/DELETE 需 cookie 或管理员 token
     if (path.startsWith("/api/share/")) {
+      if (request.method === "GET" || request.method === "HEAD") return await runNext();
+      if (hasAdminToken || hasCookie) {
+        return await runNext();
+      }
+      return deny();
+    }
+    if (path.startsWith("/api/share-code/")) {
       if (request.method === "GET" || request.method === "HEAD") return await runNext();
       if (hasAdminToken || hasCookie) {
         return await runNext();

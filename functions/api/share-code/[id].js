@@ -4,7 +4,8 @@
 
 import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
-import { normalizeOptionalTimestamp } from "../../_lib/numbers.js";
+import { normalizeNonNegativeInteger, normalizeOptionalTimestamp, normalizePositiveInteger } from "../../_lib/numbers.js";
+import { parseShareOptions } from "../../_lib/share-options.js";
 
 // 内联 base32 解码（避免跨模块依赖）
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -60,7 +61,7 @@ export async function onRequestGet(context) {
   const id = normalizeRouteId(params.id);
   if (!id) return noStoreResponse("Missing id", 400);
 
-  if (!hasKvMethods(env, ["get"])) return kvMissingTextResponse(200);
+  if (!hasKvMethods(env, ["get", "put", "delete"])) return kvMissingTextResponse(200);
 
   const url = new URL(request.url);
   const codeKeyB64 = url.searchParams.get("k");
@@ -75,7 +76,22 @@ export async function onRequestGet(context) {
     return noStoreResponse("Bad data", 500);
   }
 
-  // 解密 secret
+  const max = normalizeNonNegativeInteger(codePayload.max, { max: 1_000_000 });
+  const count = normalizeNonNegativeInteger(codePayload.count);
+  const ttl = normalizeNonNegativeInteger(codePayload.ttl);
+  const expireAt = normalizeOptionalTimestamp(codePayload.expireAt);
+
+  if (expireAt && expireAt <= Date.now()) {
+    try { await cleanupShareCode(env, id, { strictPrimary: true }); }
+    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
+    return noStoreResponse("Gone", 410, { "X-Share-Reason": "expired" });
+  }
+  if (max > 0 && count >= max) {
+    try { await cleanupShareCode(env, id, { strictPrimary: true }); }
+    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
+    return noStoreResponse("Gone", 410, { "X-Share-Reason": "max-access-exceeded" });
+  }
+
   let secretData;
   try {
     const keyRaw = fromB64url(codeKeyB64);
@@ -97,11 +113,48 @@ export async function onRequestGet(context) {
   const period = Math.max(5, Math.trunc(Number(secretData.period)) || 30);
   const step = Math.floor(Date.now() / 1000 / period);
   const secondsLeft = period - (Math.floor(Date.now() / 1000) % period);
+  const issuedStep = normalizePositiveInteger(codePayload.issuedStep);
+  if (issuedStep !== null && issuedStep !== step) {
+    try { await cleanupShareCode(env, id, { strictPrimary: true }); }
+    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
+    return noStoreResponse("Gone", 410, { "X-Share-Reason": "code-window-expired" });
+  }
 
   let code;
   try {
     code = await hotp(base32Decode(secretData.secret), step, algo, digits);
   } catch {
+    return noStoreResponse("Server Error", 500, { "X-Note": "error" });
+  }
+
+  const nextCount = count + 1;
+  const headers = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Access-Remaining": formatAccessRemaining(max, nextCount),
+  };
+  const now = Date.now();
+  const stat = {
+    accessCount: nextCount,
+    lastAccessAt: now,
+    accessUserAgentSample: sanitizeUserAgent(request.headers.get("User-Agent")),
+  };
+  try {
+    if (max > 0 && nextCount >= max) {
+      try { await writeShareStat(env, id, stat, expireAt); } catch {}
+      await cleanupShareCode(env, id, { strictPrimary: true });
+    } else {
+      const next = { ...codePayload, count: nextCount, issuedStep: step, lastAccessAt: now };
+      if (ttl > 0) {
+        const remain = expireAt ? Math.max(60, Math.floor((expireAt - Date.now()) / 1000)) : ttl;
+        await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(next), { expirationTtl: remain });
+      } else {
+        await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(next));
+      }
+      try { await writeShareStat(env, id, stat, expireAt); } catch {}
+    }
+  } catch (error) {
+    console.error(`share-code/${id}: KV write failed before response`, error?.message || error);
     return noStoreResponse("Server Error", 500, { "X-Note": "error" });
   }
 
@@ -111,9 +164,11 @@ export async function onRequestGet(context) {
     digits,
     algorithm: secretData.algorithm || "SHA1",
     period,
+    label: secretData.label || "",
+    note: secretData.note || "",
   }), {
     status: 200,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    headers,
   });
 }
 
@@ -133,14 +188,26 @@ export async function onRequestPut(context) {
     return noStoreResponse("Bad Request", 400);
   }
 
-  const stored = { v: 1, iv: body.iv, ct: body.ct };
   const url = new URL(request.url);
-  const ttlParam = url.searchParams.get("ttl");
-  if (ttlParam === "perm" || ttlParam === "0") {
+  const { permanent: usePermanent, ttl: useTtl, maxAccess } = parseShareOptions({
+    defaultTtl: env.SHARE_TTL,
+    ttlParam: url.searchParams.get("ttl"),
+    maxParam: url.searchParams.get("max"),
+  });
+  const stored = {
+    v: 1,
+    iv: body.iv,
+    ct: body.ct,
+    max: maxAccess,
+    count: 0,
+    ttl: usePermanent ? 0 : useTtl,
+    expireAt: usePermanent ? 0 : (Date.now() + useTtl * 1000),
+    createdAt: Date.now(),
+  };
+  if (usePermanent) {
     await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(stored));
   } else {
-    const ttl = Math.max(60, Math.floor(Number(ttlParam)) || 86400);
-    await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(stored), { expirationTtl: ttl });
+    await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(stored), { expirationTtl: useTtl });
   }
   return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
 }
@@ -150,4 +217,38 @@ function noStoreResponse(body, status, headers = {}) {
     status,
     headers: { ...headers, "Cache-Control": "no-store" },
   });
+}
+
+async function cleanupShareCode(env, id, { strictPrimary = false } = {}) {
+  try {
+    await env.AUTH_KV.delete(`sharecode:${id}`);
+  } catch (error) {
+    if (strictPrimary) throw error;
+  }
+  try { await env.AUTH_KV.delete(`sharekey:${id}`); } catch {}
+  try { await env.AUTH_KV.delete(`sharestat:${id}`); } catch {}
+}
+
+async function writeShareStat(env, id, stat, expireAt = 0) {
+  if (!hasKvMethods(env, ["put"])) return;
+  const key = `sharestat:${id}`;
+  const body = JSON.stringify({
+    accessCount: normalizeNonNegativeInteger(stat?.accessCount),
+    lastAccessAt: normalizeOptionalTimestamp(stat?.lastAccessAt),
+    accessUserAgentSample: sanitizeUserAgent(stat?.accessUserAgentSample),
+  });
+  const normalizedExpireAt = normalizeOptionalTimestamp(expireAt);
+  const remain = normalizedExpireAt ? Math.max(60, Math.floor((normalizedExpireAt - Date.now()) / 1000)) : 0;
+  if (remain > 0) await env.AUTH_KV.put(key, body, { expirationTtl: remain });
+  else await env.AUTH_KV.put(key, body);
+}
+
+function sanitizeUserAgent(value) {
+  if (typeof value !== "string") return "";
+  const text = String(value || "").replace(/[\x00-\x1F\x7F]+/g, " ").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 160) : "";
+}
+
+function formatAccessRemaining(max, used) {
+  return max > 0 ? String(Math.max(0, max - used)) : "unlimited";
 }

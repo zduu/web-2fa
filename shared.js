@@ -63,6 +63,7 @@ async function main() {
 function startCodeModeView(sid, codeKey) {
   setLabel("加载中…");
   let ticker = null;
+  let expiresAt = 0;
 
   async function fetchCode() {
     try {
@@ -81,9 +82,39 @@ function startCodeModeView(sid, codeKey) {
     if (ticker) { clearInterval(ticker); ticker = null; }
   }
 
-  async function renderOnce() {
+  function renderCountdown() {
+    const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+    const leftEl = document.querySelector(".left");
+    if (leftEl) leftEl.textContent = String(left);
+    const periodText = document.getElementById("algo")?.textContent || "";
+    const periodMatch = periodText.match(/(\d+)s$/);
+    const period = periodMatch ? Number(periodMatch[1]) : 30;
+    const pct = (left / Math.max(1, period)) * 100;
+    const bar = document.querySelector(".bar");
+    if (bar) {
+      bar.style.width = pct + "%";
+      bar.style.background = left <= 5
+        ? "linear-gradient(90deg, #ef4444, #f59e0b)"
+        : left <= 10
+          ? "linear-gradient(90deg, #f59e0b, #fbbf24)"
+          : "linear-gradient(90deg, var(--ok), var(--primary))";
+    }
+    if (left <= 0) {
+      stopTicker();
+      const codeEl = document.getElementById("code");
+      if (codeEl) codeEl.textContent = "已过期";
+      const note = document.getElementById("note");
+      if (note) {
+        note.textContent = "此验证码已过期。安全模式不会继续生成后续验证码，请让分享方重新生成链接。";
+        note.style.display = "";
+      }
+    }
+  }
+
+  async function renderInitial() {
     const data = await fetchCode();
     if (!data) return;
+    setLabel(data.label || "共享验证码");
     document.getElementById("code").textContent = formatCode(data.code, data.digits);
     const algoEl = document.getElementById("algo");
     if (algoEl) algoEl.textContent = `${data.algorithm} · ${data.digits}位 · ${data.period}s`;
@@ -92,25 +123,21 @@ function startCodeModeView(sid, codeKey) {
     // Update subtitle to indicate safe mode
     const subEl = document.querySelector(".share-head .sub");
     if (subEl) subEl.textContent = "安全模式 · 仅展示验证码，不含 Secret";
-    document.querySelector(".left").textContent = String(data.secondsLeft);
-    const pct = (data.secondsLeft / Math.max(1, data.period)) * 100;
-    const bar = document.querySelector(".bar");
-    if (bar) {
-      bar.style.width = pct + "%";
-      bar.style.background = data.secondsLeft <= 5
-        ? "linear-gradient(90deg, #ef4444, #f59e0b)"
-        : data.secondsLeft <= 10
-          ? "linear-gradient(90deg, #f59e0b, #fbbf24)"
-          : "linear-gradient(90deg, var(--ok), var(--primary))";
-    }
+    expiresAt = Date.now() + Math.max(0, Number(data.secondsLeft) || 0) * 1000;
     const note = document.getElementById("note");
-    if (note) { note.textContent = "安全模式：仅展示当前验证码，接收方无法获取密钥"; note.style.display = ""; }
+    if (note) {
+      note.textContent = typeof data.note === "string" && data.note.trim()
+        ? data.note
+        : "安全模式：仅展示当前验证码，接收方无法获取密钥，也不会继续生成后续验证码。";
+      note.style.display = "";
+    }
+    renderCountdown();
+    ticker = setInterval(renderCountdown, 1000);
   }
 
-  renderOnce();
-  ticker = setInterval(renderOnce, 1000);
+  renderInitial();
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") renderOnce();
+    if (document.visibilityState === "visible" && expiresAt) renderCountdown();
   });
   window.addEventListener("beforeunload", () => stopTicker());
 
@@ -119,7 +146,10 @@ function startCodeModeView(sid, codeKey) {
 
 // ---- 完整模式（客户端解密，旧链接兼容）----
 function startLegacyModeView(sid, kParam, wrappedKey) {
-  if (wrappedKey) {
+  const frag = new URL(location.href).hash.replace(/^#/, "");
+  const fragParams = new URLSearchParams(frag);
+  const isCodeMode = fragParams.get("cm") === "1";
+  if (wrappedKey && isCodeMode) {
     showPasswordGate(null, wrappedKey, null);
     return;
   }
@@ -132,6 +162,11 @@ function startLegacyModeView(sid, kParam, wrappedKey) {
     const remaining = res.headers.get("X-Access-Remaining");
     let payload;
     try { payload = await res.json(); } catch { setLabel("数据错误"); return; }
+
+    if (wrappedKey) {
+      showPasswordGate(payload, wrappedKey, remaining);
+      return;
+    }
 
     let data;
     try { data = await decryptPayload(payload, kParam); } catch { setLabel("解密失败"); return; }
@@ -247,7 +282,7 @@ function startLegacyShareView(data, remaining) {
 function bindCopyActions() {
   document.getElementById("copy")?.addEventListener("click", async () => {
     const shown = document.getElementById("code")?.textContent?.replace(/\s+/g, "") || "";
-    if (!shown || shown === "ERR") { toast("验证码尚未就绪", "warn"); return; }
+    if (!/^\d{4,10}$/.test(shown)) { toast("验证码尚未就绪或已过期", "warn"); return; }
     const ok = await copyText(shown);
     toast(ok ? "已复制验证码" : "复制失败", ok ? "ok" : "err");
   });

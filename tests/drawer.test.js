@@ -121,6 +121,15 @@ describe("drawer display formatters", () => {
     });
 
     expect(buildDrawerCloudShareCopyText({
+      sid: "sid-safe",
+      k: " safe-key ",
+      showSecret: false,
+    })).toEqual({
+      type: "link",
+      text: "https://public.example.com/app/shared.html?sid=sid-safe#ck=safe-key",
+    });
+
+    expect(buildDrawerCloudShareCopyText({
       sid: "sid-a",
       requiresPassword: true,
       protectedBundle: {
@@ -132,6 +141,20 @@ describe("drawer display formatters", () => {
     })).toEqual({
       type: "protected-link",
       text: "https://public.example.com/app/shared.html?sid=sid-a#wk=wrapped%2Fkey&iv=iv&s=salt&iter=200000",
+    });
+
+    expect(buildDrawerCloudShareCopyText({
+      sid: "sid-protected-safe",
+      requiresPassword: true,
+      showSecret: false,
+      protectedBundle: {
+        wk: "wrapped",
+        iv: "iv",
+        s: "salt",
+      },
+    })).toEqual({
+      type: "protected-link",
+      text: "https://public.example.com/app/shared.html?sid=sid-protected-safe#wk=wrapped&iv=iv&s=salt&cm=1",
     });
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { b64url } from "../src/core/crypto.js";
 import { getAccessGateState, saveAccessGateConfig } from "../functions/_lib/access-gate.js";
 import {
   isAuthed,
@@ -18,7 +19,7 @@ import {
 import { isCipherPayload, isVaultPayload } from "../functions/_lib/payload.js";
 import { normalizeShareKeyPayload } from "../functions/_lib/share-key.js";
 import { parseOptionalShareTtl, parseShareOptions } from "../functions/_lib/share-options.js";
-import { getAllowedOrigin } from "../functions/_middleware.js";
+import { getAllowedOrigin, onRequest as onMiddlewareRequest } from "../functions/_middleware.js";
 import {
   onRequestGet as onAdminAccessGateGetRequest,
   onRequestPut as onAdminAccessGatePutRequest,
@@ -31,6 +32,10 @@ import {
 } from "../functions/api/gate.js";
 import { onRequestGet as onHealthRequest } from "../functions/api/health.js";
 import { onRequest as onShareRequest } from "../functions/api/share/[id].js";
+import {
+  onRequestGet as onShareCodeGetRequest,
+  onRequestPut as onShareCodePutRequest,
+} from "../functions/api/share-code/[id].js";
 import { onRequestGet as onShareListRequest } from "../functions/api/share/list.js";
 import { onRequestGet as onShareStatRequest } from "../functions/api/share/stat.js";
 import { onRequest as onShareKeyRequest } from "../functions/api/sharekey/[id].js";
@@ -75,6 +80,18 @@ function authedContext({
   };
 }
 
+async function encryptSharePayload(payload) {
+  const keyRaw = crypto.getRandomValues(new Uint8Array(32));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await crypto.subtle.importKey("raw", keyRaw, { name: "AES-GCM" }, false, ["encrypt"]);
+  const pt = new TextEncoder().encode(JSON.stringify(payload));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, pt));
+  return {
+    key: b64url(keyRaw),
+    record: { v: 1, iv: b64url(iv), ct: b64url(ct) },
+  };
+}
+
 describe("Functions API encrypted payload validation", () => {
   it("compares configured secrets without accepting length mismatches", () => {
     expect(timingSafeEqualString("secret-token", "secret-token")).toBe(true);
@@ -104,6 +121,45 @@ describe("Functions API encrypted payload validation", () => {
 
     expect(getAllowedOrigin("http://localhost:5173", { CORS_ORIGIN: "https://app.example.com" })).toBe("");
     expect(getAllowedOrigin("https://app.example.com", { CORS_ORIGIN: "https://app.example.com" })).toBe("https://app.example.com");
+  });
+
+  it("allows public safe-share reads through the access gate but protects writes", async () => {
+    const env = {
+      ACCESS_GATE: "gate-password",
+      ADMIN_KEY: "secret-token",
+      AUTH_KV: {
+        get: vi.fn(async () => null),
+        put: vi.fn(async () => {}),
+      },
+    };
+    const next = vi.fn(async () => new Response("OK", { status: 200 }));
+
+    const readRes = await onMiddlewareRequest({
+      request: new Request("https://example.com/api/share-code/demo?k=key"),
+      env,
+      next,
+      waitUntil: vi.fn(),
+    });
+    const deniedWrite = await onMiddlewareRequest({
+      request: new Request("https://example.com/api/share-code/demo", { method: "PUT" }),
+      env,
+      next,
+      waitUntil: vi.fn(),
+    });
+    const authedWrite = await onMiddlewareRequest({
+      request: new Request("https://example.com/api/share-code/demo", {
+        method: "PUT",
+        headers: { "X-Token": "secret-token" },
+      }),
+      env,
+      next,
+      waitUntil: vi.fn(),
+    });
+
+    expect(readRes.status).toBe(200);
+    expect(deniedWrite.status).toBe(401);
+    expect(authedWrite.status).toBe(200);
+    expect(next).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes malformed numeric API fields to stable finite values", () => {
@@ -427,6 +483,135 @@ describe("Functions API encrypted payload validation", () => {
       ttl: 60,
     });
     expect(options).toEqual({ expirationTtl: 60 });
+  });
+
+  it("stores share-code payloads with normalized ttl and max access", async () => {
+    const put = vi.fn(async () => {});
+    const res = await onShareCodePutRequest(authedPutContext(
+      { iv: "iv", ct: "ciphertext" },
+      put,
+      "/api/share-code/demo?ttl=30&max=3.9",
+    ));
+
+    expect(res.status).toBe(200);
+    expect(put).toHaveBeenCalledTimes(1);
+    const [key, raw, options] = put.mock.calls[0];
+    expect(key).toBe("sharecode:demo");
+    expect(JSON.parse(raw)).toMatchObject({
+      iv: "iv",
+      ct: "ciphertext",
+      max: 3,
+      count: 0,
+      ttl: 60,
+    });
+    expect(options).toEqual({ expirationTtl: 60 });
+  });
+
+  it("returns a single safe share code without exposing the secret", async () => {
+    const encrypted = await encryptSharePayload({
+      type: "totp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      label: "GitHub",
+      note: "receiver note",
+    });
+    let stored = JSON.stringify({
+      ...encrypted.record,
+      max: 0,
+      count: 0,
+      ttl: 60,
+      expireAt: Date.now() + 60_000,
+    });
+    const get = vi.fn(async () => stored);
+    const put = vi.fn(async (key, raw) => {
+      if (key === "sharecode:demo") stored = raw;
+    });
+
+    const res = await onShareCodeGetRequest({
+      request: {
+        url: `https://example.com/api/share-code/demo?k=${encrypted.key}`,
+        headers: { get: (name) => name === "User-Agent" ? " Vitest\u0000 UA\n " : null },
+      },
+      env: { AUTH_KV: { get, put, delete: vi.fn(async () => {}) } },
+      params: { id: "demo" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Access-Remaining")).toBe("unlimited");
+    const data = await res.json();
+    expect(data).toMatchObject({
+      code: expect.stringMatching(/^\d{6}$/),
+      digits: 6,
+      algorithm: "SHA1",
+      period: 30,
+      label: "GitHub",
+      note: "receiver note",
+    });
+    expect(JSON.stringify(data)).not.toContain("JBSWY3DP");
+    expect(put).toHaveBeenCalledWith("sharestat:demo", expect.any(String), expect.any(Object));
+    const shareCodeWrite = put.mock.calls.find(([key]) => key === "sharecode:demo");
+    expect(JSON.parse(shareCodeWrite[1])).toMatchObject({
+      count: 1,
+      issuedStep: expect.any(Number),
+    });
+  });
+
+  it("expires safe share codes after their first TOTP window", async () => {
+    const encrypted = await encryptSharePayload({
+      type: "totp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+    });
+    const del = vi.fn(async () => {});
+    const res = await onShareCodeGetRequest({
+      request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+      env: {
+        AUTH_KV: {
+          get: vi.fn(async () => JSON.stringify({ ...encrypted.record, count: 0, ttl: 0, expireAt: 0, issuedStep: 1 })),
+          put: vi.fn(async () => {}),
+          delete: del,
+        },
+      },
+      params: { id: "demo" },
+    });
+
+    expect(res.status).toBe(410);
+    expect(res.headers.get("X-Share-Reason")).toBe("code-window-expired");
+    expect(del).toHaveBeenCalledWith("sharecode:demo");
+    expect(del).toHaveBeenCalledWith("sharekey:demo");
+    expect(del).toHaveBeenCalledWith("sharestat:demo");
+  });
+
+  it("cleans up safe share resources after the configured access limit", async () => {
+    const encrypted = await encryptSharePayload({
+      type: "totp",
+      secret: "JBSWY3DP",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+    });
+    const del = vi.fn(async () => {});
+    const res = await onShareCodeGetRequest({
+      request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+      env: {
+        AUTH_KV: {
+          get: vi.fn(async () => JSON.stringify({ ...encrypted.record, max: 1, count: 0, ttl: 0, expireAt: 0 })),
+          put: vi.fn(async () => {}),
+          delete: del,
+        },
+      },
+      params: { id: "demo" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Access-Remaining")).toBe("0");
+    expect(del).toHaveBeenCalledWith("sharecode:demo");
+    expect(del).toHaveBeenCalledWith("sharekey:demo");
+    expect(del).toHaveBeenCalledWith("sharestat:demo");
   });
 
   it("normalizes route ids before writing cloud records", async () => {
@@ -945,6 +1130,26 @@ describe("Functions API encrypted payload validation", () => {
       adminConfigured: false,
       syncMode: "open",
     });
+  });
+
+  it("lists both full share records and safe share-code records", async () => {
+    const list = vi.fn(async ({ prefix }) => ({
+      keys: prefix === "share:"
+        ? [{ name: "share:full" }, { name: "share:dupe" }]
+        : [{ name: "sharecode:safe" }, { name: "sharecode:dupe" }],
+      list_complete: true,
+    }));
+
+    const res = await onShareListRequest(authedContext({
+      list,
+      path: "/api/share/list",
+      params: {},
+    }));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ sids: ["full", "dupe", "safe"] });
+    expect(list).toHaveBeenCalledWith({ prefix: "share:", cursor: undefined });
+    expect(list).toHaveBeenCalledWith({ prefix: "sharecode:", cursor: undefined });
   });
 
   it("normalizes malformed share stat records before returning them", async () => {

@@ -98,7 +98,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   }
 
   // Admin convenience: store share recovery material by default so any
-  // ADMIN_KEY-authenticated device can copy the full link later.
+  // ADMIN_KEY-authenticated device can copy the matching link later.
   let recoveryStored = false;
   try {
     if (token && meta.storeKey !== false) {
@@ -353,6 +353,7 @@ export async function fetchSharedMeta(sid) {
       createdAt: normalizeOptionalTimestamp(j.createdAt),
       ttl: j.ttl ?? null,
       requiresPassword: j.requiresPassword === true,
+      showSecret: Object.prototype.hasOwnProperty.call(j, "showSecret") ? j.showSecret === true : true,
       protectedBundle: j.protectedBundle && typeof j.protectedBundle === "object" ? {
         s: normalizeShareText(j.protectedBundle.s),
         iv: normalizeShareText(j.protectedBundle.iv),
@@ -372,7 +373,7 @@ export async function fetchCloudShareRecords() {
     const meta = await fetchSharedMeta(sid);
     const stat = stats.get(sid) || { accessCount: 0, lastAccessAt: null, accessUserAgentSample: "" };
     return {
-      ...(meta || { sid, k: null, label: "分享", projectName: "", itemId: "", issuer: "", account: "", createdAt: null, ttl: null, requiresPassword: false, protectedBundle: null }),
+      ...(meta || { sid, k: null, label: "分享", projectName: "", itemId: "", issuer: "", account: "", createdAt: null, ttl: null, requiresPassword: false, showSecret: true, protectedBundle: null }),
       ...stat,
     };
   }));

@@ -1817,6 +1817,7 @@ function formatDrawerApiError(response, data, note, fallbackMessage) {
 export function buildDrawerCloudShareCopyText(record) {
   const sid = drawerText(record?.sid);
   if (!sid) return { type: "sid", text: "" };
+  const showSecret = record?.showSecret !== false;
 
   if (record?.requiresPassword) {
     const bundle = record.protectedBundle || {};
@@ -1830,13 +1831,14 @@ export function buildDrawerCloudShareCopyText(record) {
     fragment.set("s", salt);
     const iter = drawerText(bundle.iter);
     if (iter) fragment.set("iter", iter);
+    if (!showSecret) fragment.set("cm", "1");
     return { type: "protected-link", text: buildDrawerSharedUrl(sid, fragment) };
   }
 
   const key = drawerText(record?.k);
   if (!key) return { type: "sid", text: sid };
   const fragment = new URLSearchParams();
-  fragment.set("k", key);
+  fragment.set(showSecret ? "k" : "ck", key);
   return { type: "link", text: buildDrawerSharedUrl(sid, fragment) };
 }
 
