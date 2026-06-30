@@ -1,3 +1,5 @@
+import { normalizeHttpStatus } from "./numbers.js";
+
 const AUDIT_PREFIX = "audit:";
 const AUDIT_TTL_SECONDS = 30 * 24 * 3600;
 
@@ -9,7 +11,7 @@ export async function writeAuditLog(env, request, response) {
     ts,
     method: request.method,
     path: compactPath(request.url),
-    status: Number(response?.status || 0) || null,
+    status: normalizeHttpStatus(response?.status),
     ipSummary: await summarizeIp(request.headers.get("CF-Connecting-IP")),
     uaSample: sanitizeUserAgent(request.headers.get("User-Agent")),
   });
@@ -31,7 +33,11 @@ export function shouldAuditRequest(request) {
 function compactPath(rawUrl) {
   try {
     const url = new URL(rawUrl);
-    const full = `${url.pathname}${url.search}`;
+    const queryKeys = Array.from(new Set(url.searchParams.keys()));
+    const redactedSearch = queryKeys.length
+      ? `?${queryKeys.map((key) => `${encodeURIComponent(key)}=redacted`).join("&")}`
+      : "";
+    const full = `${url.pathname}${redactedSearch}`;
     return full.slice(0, 200);
   } catch {
     return "/";
@@ -47,6 +53,6 @@ async function summarizeIp(ip) {
 }
 
 function sanitizeUserAgent(value) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const text = String(value || "").replace(/[\x00-\x1F\x7F]+/g, " ").replace(/\s+/g, " ").trim();
   return text ? text.slice(0, 160) : "";
 }

@@ -1,4 +1,5 @@
 import { timingSafeEqualString } from "./auth.js";
+import { normalizeOptionalTimestamp, normalizePositiveInteger } from "./numbers.js";
 
 export const ACCESS_GATE_COOKIE = "cf_gate";
 
@@ -9,6 +10,7 @@ let runtimeGateCache = {
   expiresAt: 0,
   value: null,
   pending: null,
+  store: null,
 };
 
 export async function getAccessGateState(env) {
@@ -18,18 +20,24 @@ export async function getAccessGateState(env) {
 
 export async function saveAccessGateConfig(env, { enabled }) {
   ensureGateConfigStore(env);
+  const shouldEnable = enabled === true;
   const configuredPassword = getConfiguredGatePassword(env);
-  if (enabled && !configuredPassword) {
+  if (shouldEnable && !configuredPassword) {
     throw new Error("Cloudflare Pages 环境变量 ACCESS_GATE 未配置，无法启用访问口令");
   }
 
   const next = {
     version: 1,
-    enabled: !!enabled,
+    enabled: shouldEnable,
     updatedAt: Date.now(),
   };
   await env.AUTH_KV.put(ACCESS_GATE_KV_KEY, JSON.stringify(next));
-  runtimeGateCache = { expiresAt: Date.now() + ACCESS_GATE_CACHE_TTL_MS, value: next, pending: null };
+  runtimeGateCache = {
+    expiresAt: Date.now() + ACCESS_GATE_CACHE_TTL_MS,
+    value: next,
+    pending: null,
+    store: env.AUTH_KV,
+  };
   return runtimeToState(env, next);
 }
 
@@ -60,16 +68,18 @@ async function loadRuntimeAccessGate(env) {
   if (!hasGateConfigStore(env)) return null;
 
   const now = Date.now();
-  if (runtimeGateCache.pending) return runtimeGateCache.pending;
-  if (runtimeGateCache.expiresAt > now) return runtimeGateCache.value;
+  const store = env.AUTH_KV;
+  if (runtimeGateCache.store === store && runtimeGateCache.pending) return runtimeGateCache.pending;
+  if (runtimeGateCache.store === store && runtimeGateCache.expiresAt > now) return runtimeGateCache.value;
 
-  runtimeGateCache.pending = env.AUTH_KV.get(ACCESS_GATE_KV_KEY)
+  runtimeGateCache.pending = store.get(ACCESS_GATE_KV_KEY)
     .then((raw) => {
       const parsed = parseRuntimeGate(raw);
       runtimeGateCache = {
         expiresAt: Date.now() + ACCESS_GATE_CACHE_TTL_MS,
         value: parsed,
         pending: null,
+        store,
       };
       return parsed;
     })
@@ -78,6 +88,7 @@ async function loadRuntimeAccessGate(env) {
         expiresAt: Date.now() + ACCESS_GATE_CACHE_TTL_MS,
         value: null,
         pending: null,
+        store,
       };
       return null;
     });
@@ -89,13 +100,26 @@ function parseRuntimeGate(raw) {
   if (!raw) return null;
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return null; }
-  if (!parsed || typeof parsed !== "object" || typeof parsed.enabled !== "boolean") return null;
+  if (!parsed || typeof parsed !== "object") return null;
+  const enabled = normalizeRuntimeGateEnabled(parsed.enabled);
+  if (enabled === null) return null;
 
   return {
-    version: Number(parsed.version || 1) || 1,
-    enabled: !!parsed.enabled,
-    updatedAt: Number(parsed.updatedAt || 0) || null,
+    version: normalizePositiveInteger(parsed.version) || 1,
+    enabled,
+    updatedAt: normalizeOptionalTimestamp(parsed.updatedAt),
   };
+}
+
+function normalizeRuntimeGateEnabled(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "y") return true;
+    if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "n") return false;
+  }
+  return null;
 }
 
 async function runtimeToState(env, runtime) {
@@ -113,7 +137,7 @@ async function runtimeToState(env, runtime) {
       hasRuntimeConfig,
       editable: hasGateConfigStore(env),
       passwordConfigured,
-      updatedAt: Number(runtime?.updatedAt || 0) || null,
+      updatedAt: normalizeOptionalTimestamp(runtime?.updatedAt),
       cookieValue: "",
       verifyPassword: async () => false,
     };
@@ -125,9 +149,9 @@ async function runtimeToState(env, runtime) {
     hasRuntimeConfig,
     editable: hasGateConfigStore(env),
     passwordConfigured,
-    updatedAt: Number(runtime?.updatedAt || 0) || null,
+    updatedAt: normalizeOptionalTimestamp(runtime?.updatedAt),
     cookieValue: await cookieTagFor(configuredPassword),
-    verifyPassword: async (password) => timingSafeEqualString(String(password || ""), configuredPassword),
+    verifyPassword: async (password) => timingSafeEqualString(normalizeGatePasswordInput(password), configuredPassword),
   };
 }
 
@@ -154,11 +178,18 @@ function parseCookie(str) {
 }
 
 function bytesToB64url(bytes) {
+  if (typeof btoa !== "function" && typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
   const bin = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function getConfiguredGatePassword(env) {
   const raw = typeof env.ACCESS_GATE === "string" ? env.ACCESS_GATE : "";
-  return raw.trim() ? raw : "";
+  return raw.trim();
+}
+
+function normalizeGatePasswordInput(value) {
+  return typeof value === "string" ? value.trim() : "";
 }

@@ -5,7 +5,7 @@
 //   /api/share PUT/DELETE、/api/sharekey、/api/vault、/api/sync* 允许 ADMIN_KEY/SYNC_TOKEN 直通；
 //   /api/admin/* 允许 ADMIN_KEY/SYNC_TOKEN/KV_ADMIN_KEY 直通
 
-import { isAdminAuthed, isAuthed } from "./_lib/auth.js";
+import { isAdminAuthed, isAuthed, timingSafeEqualString } from "./_lib/auth.js";
 import { getAccessGateState, readAccessGateCookie } from "./_lib/access-gate.js";
 import { shouldAuditRequest, writeAuditLog } from "./_lib/audit.js";
 
@@ -52,7 +52,7 @@ export const onRequest = async (ctx) => {
   }
 
   const got = readAccessGateCookie(request);
-  const hasCookie = !!(got && timingSafeEqual(got, gate.cookieValue));
+  const hasCookie = !!(got && timingSafeEqualString(got, gate.cookieValue));
   const tokenHeader = request.headers.get("X-Token");
   const hasAdminToken = isAuthed(env, tokenHeader);
   const hasAdminApiToken = isAdminAuthed(env, request);
@@ -116,26 +116,30 @@ function withCors(request, env, response) {
   });
 }
 
-function getAllowedOrigin(origin, env) {
+export function getAllowedOrigin(origin, env = {}) {
   if (!origin) return "";
   const configured = String(env.CORS_ORIGIN || "").trim();
   if (configured === "*") return origin;
   const allow = configured
     ? configured.split(",").map((x) => x.trim()).filter(Boolean)
     : ["https://localhost", "http://localhost", "capacitor://localhost"];
-  return allow.includes(origin) ? origin : "";
+  if (allow.includes(origin)) return origin;
+  if (!configured && isLocalhostOrigin(origin)) return origin;
+  return "";
+}
+
+function isLocalhostOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function appendVary(current, value) {
   if (!current) return value;
   const parts = current.split(",").map((x) => x.trim().toLowerCase());
   return parts.includes(value.toLowerCase()) ? current : `${current}, ${value}`;
-}
-
-function timingSafeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));
-  return diff === 0;
 }

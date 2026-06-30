@@ -4,28 +4,50 @@
 
 export function timingSafeEqualString(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  let diff = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
   return diff === 0;
 }
 
-// 候选密钥按优先级返回（用于 X-Token / X-KV-Admin-Key 的多字段兼容）
-function configuredAdminKeys(env) {
+function normalizeSecret(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function configuredSecrets(...values) {
+  const seen = new Set();
   const out = [];
-  if (env.ADMIN_KEY) out.push(env.ADMIN_KEY);
-  if (env.SYNC_TOKEN && env.SYNC_TOKEN !== env.ADMIN_KEY) out.push(env.SYNC_TOKEN);
-  if (env.KV_ADMIN_KEY && env.KV_ADMIN_KEY !== env.ADMIN_KEY && env.KV_ADMIN_KEY !== env.SYNC_TOKEN) {
-    out.push(env.KV_ADMIN_KEY);
+  for (const value of values) {
+    const secret = normalizeSecret(value);
+    if (!secret || seen.has(secret)) continue;
+    seen.add(secret);
+    out.push(secret);
   }
   return out;
 }
 
+// 候选密钥按优先级返回（用于 X-Token / X-KV-Admin-Key 的多字段兼容）
+function configuredAdminKeys(env) {
+  return configuredSecrets(env.ADMIN_KEY, env.SYNC_TOKEN, env.KV_ADMIN_KEY);
+}
+
+export function getSyncMode(env) {
+  const mode = String(env.SYNC_MODE || "strict").trim().toLowerCase();
+  return mode === "open" ? "open" : "strict";
+}
+
+export function hasConfiguredAdminKey(env) {
+  return configuredAdminKeys(env).length > 0;
+}
+
 // 标准 X-Token 鉴权：匹配 ADMIN_KEY 或 SYNC_TOKEN
 export function isAuthed(env, token) {
-  if (!token) return false;
-  if (env.ADMIN_KEY && timingSafeEqualString(token, env.ADMIN_KEY)) return true;
-  if (env.SYNC_TOKEN && timingSafeEqualString(token, env.SYNC_TOKEN)) return true;
+  if (typeof token !== "string" || !token) return false;
+  for (const secret of configuredSecrets(env.ADMIN_KEY, env.SYNC_TOKEN)) {
+    if (timingSafeEqualString(token, secret)) return true;
+  }
   return false;
 }
 
@@ -43,14 +65,13 @@ export function isAdminAuthed(env, request) {
 
 // 是否需要写鉴权（任意管理员密钥已配置）
 export function needsAuthForWrite(env) {
-  return !!(env.ADMIN_KEY || env.SYNC_TOKEN);
+  return configuredSecrets(env.ADMIN_KEY, env.SYNC_TOKEN).length > 0;
 }
 
 // 是否需要读鉴权（strict 模式且管理员密钥已配置）
 export function needsAuthForRead(env) {
-  if (!env.ADMIN_KEY && !env.SYNC_TOKEN) return false;
-  const mode = (env.SYNC_MODE || "strict").toLowerCase();
-  return mode !== "open";
+  if (!needsAuthForWrite(env)) return false;
+  return getSyncMode(env) !== "open";
 }
 
 export function unauthorized() {
