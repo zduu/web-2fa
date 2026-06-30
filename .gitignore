@@ -13,3 +13,4 @@ dist-local/
 
 # macOS Finder metadata
 **/.DS_Store
+.claude/
