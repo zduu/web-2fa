@@ -18,13 +18,13 @@ function getFocusable(root) {
 export function openModal({ title = "", bodyHtml = "", footerHtml = "", dismissible = true, onMount, onClose } = {}) {
   const titleId = `modal-title-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const descId = bodyHtml ? `modal-desc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` : "";
-  const prevFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const prevFocused = getModalPreviousFocus(document.activeElement);
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"${descId ? ` aria-describedby="${descId}"` : ""} tabindex="-1">
       <div class="modal-head">
-        <h3 id="${titleId}">${escape(title)}</h3>
+        <h3 id="${titleId}">${escapeModalHtml(title)}</h3>
         ${dismissible ? '<button class="close" aria-label="关闭">✕</button>' : ""}
       </div>
       <div class="modal-body"${descId ? ` id="${descId}"` : ""}>${bodyHtml}</div>
@@ -78,10 +78,10 @@ export function openModal({ title = "", bodyHtml = "", footerHtml = "", dismissi
   }
 
   // animate in
-  requestAnimationFrame(() => backdrop.classList.add("show"));
+  scheduleModalFrame(() => backdrop.classList.add("show"));
 
   if (typeof onMount === "function") onMount(root, close);
-  requestAnimationFrame(() => {
+  scheduleModalFrame(() => {
     const focusables = getFocusable(root);
     const target = focusables[0] || root;
     target.focus();
@@ -101,11 +101,11 @@ export function confirmDialog({ title = "确认", message = "", okText = "确认
     };
     const { close } = openModal({
       title,
-      bodyHtml: `<p style="margin:0; line-height:1.6; color:var(--fg-muted);">${escape(message)}</p>`,
+      bodyHtml: `<p style="margin:0; line-height:1.6; color:var(--fg-muted);">${escapeModalHtml(message)}</p>`,
       footerHtml: `
         <div class="btn-row right">
-          <button class="btn ghost" data-act="cancel">${escape(cancelText)}</button>
-          <button class="btn ${danger ? "danger" : ""}" data-act="ok">${escape(okText)}</button>
+          <button class="btn ghost" data-act="cancel">${escapeModalHtml(cancelText)}</button>
+          <button class="btn ${danger ? "danger" : ""}" data-act="ok">${escapeModalHtml(okText)}</button>
         </div>`,
       onClose: () => settle(false, false),
       onMount: (r, doClose) => {
@@ -119,9 +119,10 @@ export function confirmDialog({ title = "确认", message = "", okText = "确认
 export function promptDialog({ title = "输入", label = "", placeholder = "", initial = "", okText = "确认", type = "text", multiline = false } = {}) {
   return new Promise((resolve) => {
     const id = "_p_" + Date.now();
+    const inputType = normalizePromptInputType(type);
     const inputHtml = multiline
-      ? `<textarea id="${id}" class="input mono" placeholder="${escape(placeholder)}" style="min-height:120px;">${escape(initial)}</textarea>`
-      : `<input id="${id}" class="input" type="${type}" placeholder="${escape(placeholder)}" value="${escape(initial)}" />`;
+      ? `<textarea id="${id}" class="input mono" placeholder="${escapeModalHtml(placeholder)}" style="min-height:120px;">${escapeModalHtml(initial)}</textarea>`
+      : `<input id="${id}" class="input" type="${inputType}" placeholder="${escapeModalHtml(placeholder)}" value="${escapeModalHtml(initial)}" />`;
     let settled = false;
     const settle = (value, doClose = true) => {
       if (settled) return;
@@ -133,13 +134,13 @@ export function promptDialog({ title = "输入", label = "", placeholder = "", i
       title,
       bodyHtml: `
         <div class="field">
-          ${label ? `<label for="${id}">${escape(label)}</label>` : ""}
+          ${label ? `<label for="${id}">${escapeModalHtml(label)}</label>` : ""}
           ${inputHtml}
         </div>`,
       footerHtml: `
         <div class="btn-row right">
           <button class="btn ghost" data-act="cancel">取消</button>
-          <button class="btn" data-act="ok">${escape(okText)}</button>
+          <button class="btn" data-act="ok">${escapeModalHtml(okText)}</button>
         </div>`,
       onClose: () => settle(null, false),
       onMount: (r, doClose) => {
@@ -161,7 +162,7 @@ export function actionSheet({ title = "", actions = [] } = {}) {
     const itemsHtml = actions.map((a, i) => `
       <button class="${a.danger ? "danger" : ""}" data-i="${i}">
         ${a.icon ? `<span>${a.icon}</span>` : ""}
-        <span class="grow">${escape(a.label)}</span>
+        <span class="grow">${escapeModalHtml(a.label)}</span>
       </button>
     `).join("");
     let settled = false;
@@ -178,9 +179,11 @@ export function actionSheet({ title = "", actions = [] } = {}) {
       onMount: (r, doClose) => {
         r.querySelectorAll("[data-i]").forEach(btn => {
           btn.addEventListener("click", async () => {
-            const i = Number(btn.dataset.i);
+            const i = normalizeActionSheetIndex(btn.dataset.i, actions.length);
             doClose();
-            try { await actions[i].onClick?.(); } catch (e) { console.error(e); }
+            if (i >= 0) {
+              try { await actions[i].onClick?.(); } catch (e) { console.error(e); }
+            }
             settle(i, false);
           });
         });
@@ -189,8 +192,41 @@ export function actionSheet({ title = "", actions = [] } = {}) {
   });
 }
 
-function escape(s) {
-  const div = document.createElement("div");
-  div.textContent = String(s ?? "");
-  return div.innerHTML;
+export function normalizeActionSheetIndex(value, length) {
+  const max = Math.trunc(Number(length));
+  const index = Math.trunc(Number(value));
+  if (!Number.isFinite(max) || max <= 0) return -1;
+  if (!Number.isFinite(index) || index < 0 || index >= max) return -1;
+  return index;
+}
+
+export function normalizePromptInputType(value) {
+  const type = String(value || "text").trim().toLowerCase();
+  const allowed = new Set(["text", "password", "email", "number", "search", "tel", "url"]);
+  return allowed.has(type) ? type : "text";
+}
+
+export function getModalPreviousFocus(activeElement, ElementCtor = globalThis.HTMLElement) {
+  if (typeof ElementCtor !== "function") return null;
+  try {
+    return activeElement instanceof ElementCtor ? activeElement : null;
+  } catch {
+    return null;
+  }
+}
+
+function scheduleModalFrame(callback) {
+  if (typeof requestAnimationFrame === "function") {
+    return requestAnimationFrame(callback);
+  }
+  return setTimeout(callback, 0);
+}
+
+export function escapeModalHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

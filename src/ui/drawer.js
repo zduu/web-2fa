@@ -4,7 +4,8 @@
 
 import { state, saveSyncProjects, tryUnlock, setMasterPassword, clearMasterPassword,
   loadAdminUnlocked, generateRecoveryCode, hasRecoveryCode, clearRecoveryCode, unlockWithRecoveryCode,
-  getPasskeySupport, hasPasskeyUnlock, getPasskeySlotInfo, setupPasskeyUnlock, clearPasskeyUnlock, unlockWithPasskey } from "../core/storage.js";
+  getPasskeySupport, hasPasskeyUnlock, getPasskeySlotInfo, setupPasskeyUnlock, clearPasskeyUnlock, unlockWithPasskey,
+  normalizeStoredTimestamp, normalizeSyncAutoInterval } from "../core/storage.js";
 import {
   listProjects, detectDuplicateSyncIds, createProject, updateProject, deleteProject,
   switchToProject, saveCurrentProjectItems
@@ -13,13 +14,14 @@ import {
   pushCurrent, pullCurrent, mergeAllProjectsIntoCurrent, cleanDeleted,
   startAutoSync, stopAutoSync, scheduleAutoPush, deleteCloudProject
 } from "../sync/sync.js";
-import { toast, copyText, escapeHtml } from "./toast.js";
+import { toast, copyText, escapeHtml, downloadBlob } from "./toast.js";
 import { confirmDialog, openModal, promptDialog } from "./modal.js";
 import { verifyAdminKey, unlockAdmin, lockAdmin } from "../admin/unlock.js";
 import { APP_VERSION } from "../core/version.js";
 import {
   getIdleMinutes, setIdleMinutes,
   getHiddenMinutes, setHiddenMinutes,
+  normalizeLockMinutes,
 } from "../core/idle.js";
 import { getDensity, setDensity } from "./prefs.js";
 import { getThemePreference, setThemePreference } from "./theme.js";
@@ -29,7 +31,7 @@ import {
 import { pemFingerprint } from "../core/crypto.js";
 import {
   apiUrl, canUseCloudApis, clearCloudBaseUrls, getCloudBaseUrls,
-  isAndroidApp, isLocalOnlyApp, setCloudBaseUrls,
+  getPublicBaseUrl, isAndroidApp, isLocalOnlyApp, setCloudBaseUrls,
 } from "../core/runtime.js";
 
 const moduleCache = {
@@ -38,6 +40,16 @@ const moduleCache = {
   cloud: null,
   vault: null,
 };
+
+const PROJECT_AUTO_INTERVAL_OPTIONS = [
+  { value: 5_000, label: "5 秒" },
+  { value: 30_000, label: "30 秒" },
+  { value: 60_000, label: "1 分钟（默认）" },
+  { value: 300_000, label: "5 分钟" },
+  { value: 900_000, label: "15 分钟" },
+  { value: 3_600_000, label: "1 小时" },
+  { value: 24 * 3_600_000, label: "24 小时" },
+];
 
 function loadShareModule() {
   moduleCache.share ||= import("../share/share.js");
@@ -316,10 +328,10 @@ function renderSyncPane(pane) {
       <div class="section-card col gap-2">
         <div class="row between">
           <div>
-            <div class="text-sm" style="font-weight:600;">${escapeHtml(cur.name || "未命名")}</div>
+            <div class="text-sm" style="font-weight:600;">${escapeHtml(formatDrawerProjectTitle(cur))}</div>
             <div class="text-xs muted mono">${escapeHtml(localApp ? "仅本地保存" : (cur.syncId || "-"))}</div>
           </div>
-          <span class="tag ${cur.lastSyncedAt ? "ok" : ""}">${localApp ? "本地项目" : (cur.lastSyncedAt ? "上次同步：" + new Date(cur.lastSyncedAt).toLocaleTimeString() : "未同步")}</span>
+          <span class="tag ${getDrawerLastSyncTimestamp(cur) ? "ok" : ""}">${escapeHtml(formatDrawerLastSyncLabel(cur, { localApp }))}</span>
         </div>
         <div class="btn-row">
           ${localApp ? "" : '<button class="btn" data-act="push">⬆ 推送</button><button class="btn ghost" data-act="pull">⬇ 拉取</button>'}
@@ -374,7 +386,7 @@ function renderSyncPane(pane) {
       li.className = "list-item" + (isCur ? " active" : "");
       li.innerHTML = `
         <div class="li-info">
-          <div class="li-title">${escapeHtml(p.name || "未命名")} ${dup ? '<span class="tag warn">ID 重复</span>' : ""}</div>
+          <div class="li-title">${escapeHtml(formatDrawerProjectTitle(p))} ${dup ? '<span class="tag warn">ID 重复</span>' : ""}</div>
           <div class="li-sub">${escapeHtml(localApp ? "仅本地保存" : (p.syncId || "-"))}</div>
         </div>
         <div class="li-actions">
@@ -402,8 +414,8 @@ function renderSyncPane(pane) {
     pane.querySelector('[data-act="pull"]')?.addEventListener("click", async () => {
       try { await pullCurrent(); toast("已同步", "ok"); onChangeCb?.(); }
       catch (e) {
-        if (e.code === "empty") toast("云端暂无数据", "warn");
-        else toast(e.message, "err");
+        const result = formatDrawerSyncErrorToast(e);
+        toast(result.message, result.type);
       }
     });
     pane.querySelector('[data-act="merge-all"]').addEventListener("click", async () => {
@@ -472,11 +484,7 @@ function openProjectEditor(projectId, parentPane) {
       <div class="field mt-2">
         <label for="pe-interval">自动拉取频率</label>
         <select id="pe-interval" class="input">
-          <option value="30000" ${Number(proj?.autoInterval) === 30000 ? "selected" : ""}>30 秒</option>
-          <option value="60000" ${(!proj?.autoInterval || Number(proj?.autoInterval) === 60000) ? "selected" : ""}>1 分钟（默认）</option>
-          <option value="300000" ${Number(proj?.autoInterval) === 300000 ? "selected" : ""}>5 分钟</option>
-          <option value="900000" ${Number(proj?.autoInterval) === 900000 ? "selected" : ""}>15 分钟</option>
-          <option value="3600000" ${Number(proj?.autoInterval) === 3600000 ? "selected" : ""}>1 小时</option>
+          ${renderProjectAutoIntervalOptions(proj)}
         </select>
       </div>
     `,
@@ -507,13 +515,13 @@ function openProjectEditor(projectId, parentPane) {
           const syncId = r.querySelector("#pe-id").value.trim();
           const secret = r.querySelector("#pe-secret").value;
           const auto = r.querySelector("#pe-auto").checked;
-          const autoInterval = Number(r.querySelector("#pe-interval")?.value) || 60000;
+          const autoInterval = normalizeSyncAutoInterval(r.querySelector("#pe-interval")?.value);
           if (!syncId || !secret) { toast("请填写 Sync ID 和 Secret", "warn"); return; }
           const dup = state.syncProjects.find(p => p.id !== projectId && (p.syncId || "").trim() === syncId);
           if (dup) {
             const ok = await confirmDialog({
               title: "Sync ID 重复",
-              message: `已有项目 "${dup.name || dup.id}" 使用相同的 Sync ID，继续保存将共用同一云端数据，可能互相覆盖。仍要继续？`,
+              message: `已有项目 "${formatDrawerProjectTitle(dup)}" 使用相同的 Sync ID，继续保存将共用同一云端数据，可能互相覆盖。仍要继续？`,
               danger: true
             });
             if (!ok) return;
@@ -866,13 +874,13 @@ function renderDataPane(pane) {
 
   // 自动锁定输入
   pane.querySelector("#idle-min")?.addEventListener("change", (e) => {
-    const v = Math.max(0, Math.min(1440, Number(e.target.value) || 0));
+    const v = normalizeLockMinutes(e.target.value, 0);
     setIdleMinutes(v);
     e.target.value = String(v);
     toast(v > 0 ? `闲置 ${v} 分钟自动锁定` : "已停用闲置锁定", "ok");
   });
   pane.querySelector("#hidden-min")?.addEventListener("change", (e) => {
-    const v = Math.max(0, Math.min(1440, Number(e.target.value) || 0));
+    const v = normalizeLockMinutes(e.target.value, 0);
     setHiddenMinutes(v);
     e.target.value = String(v);
     toast(v > 0 ? `离开 ${v} 分钟自动锁定` : "已停用离开锁定", "ok");
@@ -976,12 +984,14 @@ async function renderSharePane(pane) {
         li.className = "list-item";
         const label = rec.label || "分享";
         const accessBits = [];
-        accessBits.push(`访问 ${Math.max(0, Number(rec.accessCount || 0))} 次`);
-        accessBits.push(rec.lastAccessAt ? `最近 ${new Date(rec.lastAccessAt).toLocaleString()}` : "尚未访问");
+        accessBits.push(formatDrawerShareAccessCount(rec.accessCount));
+        const lastAccessLabel = formatDrawerTimestamp(rec.lastAccessAt);
+        accessBits.push(lastAccessLabel ? `最近 ${lastAccessLabel}` : "尚未访问");
+        const createdAtLabel = formatDrawerTimestamp(rec.createdAt);
         const metaParts = [
           `SID: ${rec.sid}`,
           rec.projectName ? rec.projectName : "",
-          rec.createdAt ? new Date(rec.createdAt).toLocaleString() : "",
+          createdAtLabel,
           rec.requiresPassword ? "口令保护" : "",
         ].filter(Boolean);
         li.innerHTML = `
@@ -997,22 +1007,18 @@ async function renderSharePane(pane) {
           </div>`;
         cl.appendChild(li);
         li.querySelector("[data-copy]").addEventListener("click", async () => {
-          if (rec.requiresPassword && rec.protectedBundle?.wk && rec.protectedBundle?.iv && rec.protectedBundle?.s) {
-            const frag = new URLSearchParams();
-            frag.set("wk", rec.protectedBundle.wk);
-            frag.set("iv", rec.protectedBundle.iv);
-            frag.set("s", rec.protectedBundle.s);
-            if (rec.protectedBundle.iter) frag.set("iter", String(rec.protectedBundle.iter));
-            const ok = await copyText(`${location.origin}/shared.html?sid=${encodeURIComponent(rec.sid)}#${frag.toString()}`);
+          const copy = buildDrawerCloudShareCopyText(rec);
+          if (copy.type === "protected-link") {
+            const ok = await copyText(copy.text);
             toast(ok ? "已复制受保护链接" : "复制失败", ok ? "ok" : "err");
-          } else if (rec.requiresPassword) {
-            const ok = await copyText(rec.sid);
+          } else if (copy.type === "protected-sid") {
+            const ok = await copyText(copy.text);
             toast(ok ? "未保存受保护片段，已复制 SID" : "复制失败", ok ? "warn" : "err");
-          } else if (rec.k) {
-            const ok = await copyText(`${location.origin}/shared.html?sid=${encodeURIComponent(rec.sid)}#k=${rec.k}`);
+          } else if (copy.type === "link") {
+            const ok = await copyText(copy.text);
             toast(ok ? "已复制链接" : "复制失败", ok ? "ok" : "err");
           } else {
-            const ok = await copyText(rec.sid);
+            const ok = await copyText(copy.text);
             toast(ok ? "未保存密钥，已复制 SID" : "复制失败", ok ? "warn" : "err");
           }
         });
@@ -1304,7 +1310,8 @@ function bindAdminPane(pane) {
     } else {
       parts.push("当前没有启用访问口令");
     }
-    if (info?.updatedAt) parts.push(`最近修改：${new Date(info.updatedAt).toLocaleString()}`);
+    const updatedAtLabel = formatDrawerTimestamp(info?.updatedAt);
+    if (updatedAtLabel) parts.push(`最近修改：${updatedAtLabel}`);
     if (info?.editable === false) parts.push("服务端未绑定 AUTH_KV，无法站内修改");
     gateSource.textContent = parts.join(" · ");
     gateEnv.textContent = info?.passwordConfigured
@@ -1326,9 +1333,7 @@ function bindAdminPane(pane) {
           "Cache-Control": "no-store",
         }
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data?.success === false) throw new Error(data.error || "读取失败");
+      const data = await readDrawerJsonResponse(res, { fallbackMessage: "读取失败" });
       renderGateState(data);
     } catch (e) {
       gateStatus.className = "tag warn";
@@ -1356,19 +1361,25 @@ function bindAdminPane(pane) {
         <div class="list" id="cl-items"></div>
       `;
       const items = cloudList.querySelector("#cl-items");
+      const selectableIds = new Set(getSelectableCloudProjectIds(cloudProjects));
+      for (const id of Array.from(selected)) {
+        if (!selectableIds.has(id)) selected.delete(id);
+      }
       for (const p of cloudProjects) {
         const li = document.createElement("div");
         li.className = "list-item";
-        const checked = selected.has(p.syncId) ? "checked" : "";
+        const syncId = drawerText(p.syncId);
+        const selectable = isSelectableCloudProject(p);
+        const checked = selectable && selected.has(syncId) ? "checked" : "";
         li.innerHTML = `
-          <input type="checkbox" data-sel-id="${escapeHtml(p.syncId || "")}" ${checked} />
+          <input type="checkbox" data-sel-id="${escapeHtml(syncId)}" ${checked} ${selectable ? "" : "disabled"} />
           <div class="li-info">
-            <div class="li-title mono">${escapeHtml(p.syncId || "未知")}</div>
-            <div class="li-sub">v${p.metadata?.version || 1} · ${p.metadata?.hasData ? "有数据" : "空"}</div>
+            <div class="li-title mono">${escapeHtml(syncId || "未知")}</div>
+            <div class="li-sub">v${p.metadata?.version || 1} · ${formatCloudProjectDataStatus(p.metadata)}</div>
           </div>
           <div class="li-actions">
-            <button class="btn ghost sm" data-import="${escapeHtml(p.syncId || "")}">导入</button>
-            <button class="btn ghost sm danger" data-del="${escapeHtml(p.syncId || "")}">删除</button>
+            <button class="btn ghost sm" data-import="${escapeHtml(syncId)}">导入</button>
+            <button class="btn ghost sm danger" data-del="${escapeHtml(syncId)}">删除</button>
           </div>
         `;
         items.appendChild(li);
@@ -1378,7 +1389,11 @@ function bindAdminPane(pane) {
         else selected.delete(cb.dataset.selId);
       }));
       cloudList.querySelector('[data-sel="all"]').addEventListener("click", () => {
-        items.querySelectorAll("[data-sel-id]").forEach(cb => { cb.checked = true; selected.add(cb.dataset.selId); });
+        items.querySelectorAll("[data-sel-id]").forEach(cb => {
+          if (cb.disabled) return;
+          cb.checked = true;
+          selected.add(cb.dataset.selId);
+        });
       });
       cloudList.querySelector('[data-sel="none"]').addEventListener("click", () => {
         items.querySelectorAll("[data-sel-id]").forEach(cb => { cb.checked = false; selected.delete(cb.dataset.selId); });
@@ -1440,10 +1455,7 @@ function bindAdminPane(pane) {
           enabled: gateEnabled.checked,
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
+      const data = await readDrawerJsonResponse(res, { fallbackMessage: "保存失败" });
       renderGateState(data);
       toast(gateEnabled.checked ? "访问口令已启用" : "访问口令已关闭", "ok");
     } catch (e) {
@@ -1458,9 +1470,7 @@ function bindAdminPane(pane) {
     const secrets = secretsRaw.split(/\n|,/).map(s => s.trim()).filter(Boolean);
     if (!secrets.length) { toast("请先填写同步密钥", "warn"); return; }
     if (!cloudProjects.length) { toast("请先加载云端项目", "warn"); return; }
-    const targetProjects = selected.size
-      ? cloudProjects.filter(p => selected.has(p.syncId))
-      : cloudProjects;
+    const targetProjects = getSelectedCloudProjects(cloudProjects, selected);
     if (!targetProjects.length) { toast("没有可预览的项目", "warn"); return; }
     pane.querySelector("#bulk-result").innerHTML = `<div class="empty-msg">解密中…</div>`;
     const { decryptCloudAll } = await loadCloudModule();
@@ -1475,8 +1485,8 @@ function bindAdminPane(pane) {
     for (const it of aggregated.slice(0, 50)) {
       html += `<div class="list-item">
         <div class="li-info">
-          <div class="li-title">${escapeHtml(it.issuer || "")} ${it.account ? "· " + escapeHtml(it.account) : ""}</div>
-          <div class="li-sub">${escapeHtml(it._projectName || "-")}</div>
+          <div class="li-title">${escapeHtml(formatDrawerItemTitle(it))}</div>
+          <div class="li-sub">${escapeHtml(formatDrawerProjectName(it._projectName))}</div>
         </div>
       </div>`;
     }
@@ -1497,8 +1507,8 @@ function bindAdminPane(pane) {
       const fmt = pane.querySelector("#bulk-fmt").value;
       const split = pane.querySelector("#bulk-split").checked;
       const onlySel = pane.querySelector("#bulk-selected").checked;
-      exportDecrypted({ items: aggregated, format: fmt, split, selected: onlySel ? selected : null });
-      toast("已生成下载", "ok");
+      const count = exportDecrypted({ items: aggregated, format: fmt, split, selected: onlySel ? selected : null });
+      toast(count ? `已生成 ${count} 个下载` : "没有可导出的记录", count ? "ok" : "warn");
     })();
   });
 
@@ -1509,8 +1519,7 @@ function bindAdminPane(pane) {
     try {
       const token = state.globalToken;
       const res = await fetch(apiUrl("/api/sync-trash"), { headers: { "X-Token": token, "Cache-Control": "no-store" } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await readDrawerJsonResponse(res, { fallbackMessage: "加载回收站失败" });
       const items = Array.isArray(data.items) ? data.items : [];
       if (!items.length) { cl.innerHTML = '<div class="empty-msg">回收站为空</div>'; return; }
       cl.innerHTML = "";
@@ -1520,7 +1529,7 @@ function bindAdminPane(pane) {
         li.innerHTML = `
           <div class="li-info">
             <div class="li-title mono">${escapeHtml(it.syncId)}</div>
-            <div class="li-sub">${it.deletedAt ? `删除于 ${new Date(it.deletedAt).toLocaleString()}` : "时间未知"}</div>
+            <div class="li-sub">${formatDrawerDeletedAtLabel(it.deletedAt)}</div>
           </div>
           <div class="li-actions">
             <button class="btn ghost sm" data-restore>恢复</button>
@@ -1530,14 +1539,15 @@ function bindAdminPane(pane) {
         li.querySelector("[data-restore]").addEventListener("click", async () => {
           try {
             const r = await fetch(apiUrl(`/api/sync-backup/${encodeURIComponent(it.syncId)}`), { headers: { "X-Token": state.globalToken, "Cache-Control": "no-store" } });
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const info = await r.json();
+            const info = await readDrawerJsonResponse(r, { fallbackMessage: "加载备份失败" });
             const backups = Array.isArray(info.backups) ? info.backups : [];
             if (!backups.length) { toast("没有可用备份", "warn"); return; }
             const pick = backups[0]; // 最新一份
-            const restore = await fetch(apiUrl(`/api/sync-backup/${encodeURIComponent(it.syncId)}?ts=${pick.ts}`), { method: "POST", headers: { "X-Token": state.globalToken } });
+            const backupTs = getDrawerTimestamp(pick?.ts);
+            if (!backupTs) { toast("备份时间无效", "err"); return; }
+            const restore = await fetch(apiUrl(`/api/sync-backup/${encodeURIComponent(it.syncId)}?ts=${backupTs}`), { method: "POST", headers: { "X-Token": state.globalToken } });
             if (!restore.ok) throw new Error(`HTTP ${restore.status}`);
-            toast(`已用 ${new Date(pick.ts).toLocaleString()} 的备份恢复`, "ok");
+            toast(`已用 ${formatDrawerTimestamp(backupTs)} 的备份恢复`, "ok");
             li.remove();
           } catch (e) { toast(`恢复失败：${e.message}`, "err"); }
         });
@@ -1564,8 +1574,7 @@ function bindAdminPane(pane) {
       const res = await fetch(apiUrl("/api/admin/audit?limit=100"), {
         headers: { "X-Token": state.globalToken, "Cache-Control": "no-store" }
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await readDrawerJsonResponse(res, { fallbackMessage: "加载审计日志失败" });
       const items = Array.isArray(data.items) ? data.items : [];
       if (!items.length) { el.innerHTML = '<div class="empty-msg">暂无日志</div>'; return; }
       el.innerHTML = "";
@@ -1578,7 +1587,7 @@ function bindAdminPane(pane) {
           item.status ? `HTTP ${item.status}` : "",
         ].filter(Boolean).join(" · ");
         const line2 = [
-          item.ts ? new Date(item.ts).toLocaleString() : "",
+          formatDrawerTimestamp(item.ts),
           item.ipSummary ? `IP#${item.ipSummary}` : "",
         ].filter(Boolean).join(" · ");
         li.innerHTML = `
@@ -1620,7 +1629,7 @@ function bindAdminPane(pane) {
     const secretsRaw = pane.querySelector("#bulk-secrets").value.trim();
     const secs = secretsRaw.split(/\n|,/).map(s => s.trim()).filter(Boolean);
     if (!secs.length) { toast("请在批量解密区输入 Sync Secret（取第一个用于托管）", "warn"); return; }
-    const ids = selected.size ? Array.from(selected) : cloudProjects.map(p => p.syncId);
+    const ids = getSelectedCloudProjectIds(cloudProjects, selected);
     if (!ids.length) { toast("请先加载并勾选云端项目", "warn"); return; }
     const ctl = openProgress("托管选中项目密钥");
     try {
@@ -1637,7 +1646,7 @@ function bindAdminPane(pane) {
       placeholder: "-----BEGIN PRIVATE KEY-----...", multiline: true
     });
     if (!pem) return;
-    const ids = selected.size ? Array.from(selected) : cloudProjects.map(p => p.syncId);
+    const ids = getSelectedCloudProjectIds(cloudProjects, selected);
     if (!ids.length) { toast("请先加载并勾选云端项目", "warn"); return; }
     const ctl = openProgress("找回选中项目密钥");
     try {
@@ -1646,14 +1655,17 @@ function bindAdminPane(pane) {
       if (!recovered.length) { toast("没有找回任何密钥", "warn"); return; }
       const text = recovered.map(r => `${r.id}: ${r.secret}`).join("\n") + "\n";
       const ts = Date.now();
-      downloadBlobLike(`recovered-secrets-${ts}.txt`, text);
-      toast(`已找回 ${recovered.length} 个密钥并下载`, "ok");
+      if (downloadDrawerTextFile(`recovered-secrets-${ts}.txt`, text)) {
+        toast(`已找回 ${recovered.length} 个密钥并下载`, "ok");
+      } else {
+        toast(`已找回 ${recovered.length} 个密钥，但下载失败`, "warn");
+      }
     } catch (e) { ctl.done("出错：" + e.message); toast(e.message, "err"); }
   });
 
   pane.querySelector('[data-act="vault-migrate"]').addEventListener("click", async () => {
     const { migrateSecrets } = await loadVaultModule();
-    const ids = selected.size ? Array.from(selected) : [];
+    const ids = getSelectedCloudProjectIds(cloudProjects, selected, { requireExplicitSelection: true });
     if (!ids.length) { toast("请先加载并勾选云端项目", "warn"); return; }
     if (!(await reauthAdmin("批量密钥迁移"))) return;
     const oldRaw = await promptDialog({ title: "批量密钥迁移 1/2", label: "旧 Sync Secret (可多个，换行/逗号分隔)", multiline: true });
@@ -1673,11 +1685,9 @@ function bindAdminPane(pane) {
   void loadGateState();
 }
 
-function downloadBlobLike(filename, text) {
+export function downloadDrawerTextFile(filename, text) {
   const blob = new Blob([text], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+  return downloadBlob(filename, blob);
 }
 
 async function refreshFingerprint(pane) {
@@ -1716,13 +1726,185 @@ function showRecoveryCodeDialog(code, onClose) {
       });
       r.querySelector('[data-act="download"]').addEventListener("click", () => {
         const blob = new Blob([`Web 2FA Authenticator - Recovery Code\nGenerated: ${new Date().toISOString()}\n\n${code}\n\n请妥善保管。重置主密码或重置恢复码后此码将失效。\n`], { type: "text/plain" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = `2fa-recovery-${Date.now()}.txt`; a.click(); URL.revokeObjectURL(url);
-        downloaded = true; refresh();
+        downloaded = downloadBlob(`2fa-recovery-${Date.now()}.txt`, blob);
+        if (!downloaded) toast("下载失败", "err");
+        refresh();
       });
       ack.addEventListener("click", () => { doClose(); onClose?.(); });
     },
   });
+}
+
+export function formatDrawerItemTitle(item) {
+  const issuer = drawerText(item?.issuer);
+  const account = drawerText(item?.account);
+  if (issuer && account) return `${issuer} · ${account}`;
+  return issuer || account || "未命名账户";
+}
+
+export function formatDrawerProjectName(value) {
+  return drawerText(value) || "-";
+}
+
+export function formatDrawerProjectTitle(project) {
+  if (project && typeof project === "object") {
+    return drawerText(project.name) || drawerText(project.id) || "未命名";
+  }
+  return drawerText(project) || "未命名";
+}
+
+export function formatCloudProjectDataStatus(metadata) {
+  if (isFalseLikeMetadataValue(metadata?.valid)) return "格式异常";
+  return isTrueLikeMetadataValue(metadata?.hasData) ? "有数据" : "空";
+}
+
+export function getDrawerProjectAutoInterval(project) {
+  return normalizeSyncAutoInterval(project?.autoInterval);
+}
+
+export function getDrawerLastSyncTimestamp(project) {
+  return normalizeStoredTimestamp(project?.lastSyncedAt, 0);
+}
+
+export function getDrawerTimestamp(value) {
+  return normalizeStoredTimestamp(value, 0);
+}
+
+export function formatDrawerTimestamp(value) {
+  const ts = getDrawerTimestamp(value);
+  return ts ? new Date(ts).toLocaleString() : "";
+}
+
+export function formatDrawerLastSyncLabel(project, { localApp = false } = {}) {
+  if (localApp) return "本地项目";
+  const ts = getDrawerLastSyncTimestamp(project);
+  return ts ? `上次同步：${new Date(ts).toLocaleTimeString()}` : "未同步";
+}
+
+export function formatDrawerDeletedAtLabel(value) {
+  const label = formatDrawerTimestamp(value);
+  return label ? `删除于 ${label}` : "时间未知";
+}
+
+export function formatDrawerShareAccessCount(value) {
+  const count = Math.trunc(Number(value));
+  return `访问 ${Number.isFinite(count) && count > 0 && count <= Number.MAX_SAFE_INTEGER ? count : 0} 次`;
+}
+
+export function formatDrawerSyncErrorToast(error) {
+  if (error?.code === "empty") return { message: "云端暂无数据", type: "warn" };
+  if (error?.code === "deleted") return { message: error.message || "云端项目已删除，可在回收站恢复", type: "warn" };
+  return { message: error?.message || "同步失败", type: "err" };
+}
+
+export async function readDrawerJsonResponse(response, { fallbackMessage = "请求失败" } = {}) {
+  const data = await response.json().catch(() => ({}));
+  const note = response.headers?.get?.("X-Note") || "";
+  if (!response.ok || data?.success === false || note) {
+    throw new Error(formatDrawerApiError(response, data, note, fallbackMessage));
+  }
+  return data;
+}
+
+function formatDrawerApiError(response, data, note, fallbackMessage) {
+  if (note === "kv-missing") return "服务端未绑定 AUTH_KV";
+  if (typeof data?.error === "string" && data.error.trim()) return data.error.trim();
+  if (!response.ok) return `HTTP ${response.status}`;
+  if (note) return fallbackMessage;
+  return fallbackMessage;
+}
+
+export function buildDrawerCloudShareCopyText(record) {
+  const sid = drawerText(record?.sid);
+  if (!sid) return { type: "sid", text: "" };
+
+  if (record?.requiresPassword) {
+    const bundle = record.protectedBundle || {};
+    const wk = drawerText(bundle.wk);
+    const iv = drawerText(bundle.iv);
+    const salt = drawerText(bundle.s);
+    if (!wk || !iv || !salt) return { type: "protected-sid", text: sid };
+    const fragment = new URLSearchParams();
+    fragment.set("wk", wk);
+    fragment.set("iv", iv);
+    fragment.set("s", salt);
+    const iter = drawerText(bundle.iter);
+    if (iter) fragment.set("iter", iter);
+    return { type: "protected-link", text: buildDrawerSharedUrl(sid, fragment) };
+  }
+
+  const key = drawerText(record?.k);
+  if (!key) return { type: "sid", text: sid };
+  const fragment = new URLSearchParams();
+  fragment.set("k", key);
+  return { type: "link", text: buildDrawerSharedUrl(sid, fragment) };
+}
+
+export function isSelectableCloudProject(project) {
+  return !!drawerText(project?.syncId) && !isFalseLikeMetadataValue(project?.metadata?.valid);
+}
+
+export function getSelectableCloudProjectIds(projects) {
+  return (Array.isArray(projects) ? projects : [])
+    .filter(isSelectableCloudProject)
+    .map((project) => drawerText(project.syncId));
+}
+
+export function getSelectedCloudProjectIds(projects, selected, { requireExplicitSelection = false } = {}) {
+  const ids = getSelectableCloudProjectIds(projects);
+  const selectedSet = selected instanceof Set ? selected : new Set();
+  if (selectedSet.size) return ids.filter((id) => selectedSet.has(id));
+  return requireExplicitSelection ? [] : ids;
+}
+
+export function getSelectedCloudProjects(projects, selected) {
+  const ids = new Set(getSelectedCloudProjectIds(projects, selected));
+  return (Array.isArray(projects) ? projects : [])
+    .filter((project) => ids.has(drawerText(project?.syncId)));
+}
+
+function drawerText(value) {
+  return String(value || "").trim();
+}
+
+function isFalseLikeMetadataValue(value) {
+  if (value === false || value === 0) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "false" || normalized === "0" || normalized === "no" || normalized === "n";
+  }
+  return false;
+}
+
+function isTrueLikeMetadataValue(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "y";
+  }
+  return false;
+}
+
+function buildDrawerSharedUrl(sid, fragment) {
+  const base = getPublicBaseUrl();
+  return `${base}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
+}
+
+function renderProjectAutoIntervalOptions(project) {
+  const selected = getDrawerProjectAutoInterval(project);
+  const hasSelectedOption = PROJECT_AUTO_INTERVAL_OPTIONS.some((option) => option.value === selected);
+  const options = hasSelectedOption
+    ? PROJECT_AUTO_INTERVAL_OPTIONS
+    : [{ value: selected, label: `自定义：${formatProjectAutoIntervalLabel(selected)}` }, ...PROJECT_AUTO_INTERVAL_OPTIONS];
+  return options.map((option) => `
+          <option value="${option.value}" ${option.value === selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
+}
+
+function formatProjectAutoIntervalLabel(ms) {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} 小时`;
+  if (ms % 60_000 === 0) return `${ms / 60_000} 分钟`;
+  if (ms % 1_000 === 0) return `${ms / 1_000} 秒`;
+  return `${ms} ms`;
 }
 
 // 7.4 简单进度条 modal

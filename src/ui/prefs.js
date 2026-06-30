@@ -3,16 +3,21 @@
 
 export const LS_DENSITY = "authenticator.v1.density";
 
+export function normalizeDensity(value) {
+  return String(value || "").trim().toLowerCase() === "compact" ? "compact" : "comfortable";
+}
+
 export function getDensity() {
-  const v = localStorage.getItem(LS_DENSITY);
-  return v === "compact" ? "compact" : "comfortable";
+  try { return normalizeDensity(localStorage.getItem(LS_DENSITY)); }
+  catch { return "comfortable"; }
 }
 export function setDensity(v) {
-  const norm = v === "compact" ? "compact" : "comfortable";
-  localStorage.setItem(LS_DENSITY, norm);
-  applyDensity();
+  const norm = normalizeDensity(v);
+  try { localStorage.setItem(LS_DENSITY, norm); } catch {}
+  return applyDensity(norm);
 }
-export function applyDensity() {
-  const d = getDensity();
-  document.body.classList.toggle("compact", d === "compact");
+export function applyDensity(d = getDensity()) {
+  const density = normalizeDensity(d);
+  try { document.body.classList.toggle("compact", density === "compact"); } catch {}
+  return density;
 }

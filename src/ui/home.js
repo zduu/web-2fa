@@ -3,7 +3,13 @@
 
 import { state, getCurrentProject, saveSyncProjects, persist } from "../core/storage.js";
 import { normalizeProjectItemOrder } from "../sync/projects.js";
-import { codeForItem, formatCode, secondsLeft, buildOtpAuthUrl } from "../core/totp.js";
+import {
+  buildOtpAuthUrl,
+  codeForItem,
+  formatCode,
+  normalizeOtpPayload,
+  secondsLeft,
+} from "../core/totp.js";
 import { renderQrSvg } from "../core/qrgen.js";
 import { createRing } from "./ring.js";
 import { createAvatar } from "./avatar.js";
@@ -21,12 +27,13 @@ let dragItemId = null;
 // 9.3 HMAC 缓存：同 secret 同 counter（TOTP 同周期内）的 code 缓存
 const codeCache = new Map(); // key -> { code, until }
 function cacheKey(item) {
-  if (item.type === "hotp") {
-    return `H|${item.secret}|${item.algorithm}|${item.digits}|${item.counter || 0}`;
+  const payload = normalizeOtpPayload(item);
+  if (payload.type === "hotp") {
+    return `H|${payload.secret}|${payload.algorithm}|${payload.digits}|${payload.counter}`;
   }
-  const step = Math.max(5, Number(item.period) || 30);
+  const step = payload.period;
   const window = Math.floor(Date.now() / 1000 / step);
-  return `T|${item.secret}|${item.algorithm}|${item.digits}|${step}|${window}`;
+  return `T|${payload.secret}|${payload.algorithm}|${payload.digits}|${step}|${window}`;
 }
 async function getCodeCached(item) {
   const key = cacheKey(item);
@@ -82,7 +89,7 @@ function getDisplayItems() {
     state.syncProjects.forEach(p => {
       if (p && Array.isArray(p.itemsData)) {
         for (const it of p.itemsData) {
-          out.push({ ...it, _projectId: p.id, _projectName: p.name || "未命名" });
+          out.push({ ...it, _projectId: p.id, _projectName: formatProjectName(p.name) });
         }
       }
     });
@@ -115,7 +122,7 @@ function compareItemsByDisplayOrder(a, b, orderMap = null) {
     const bi = orderMap.has(b.id) ? orderMap.get(b.id) : Number.POSITIVE_INFINITY;
     if (ai !== bi) return ai - bi;
   }
-  return `${a.issuer || ""}::${a.account || ""}`.localeCompare(`${b.issuer || ""}::${b.account || ""}`);
+  return itemSortKey(a).localeCompare(itemSortKey(b));
 }
 
 export function renderHome() {
@@ -155,9 +162,9 @@ export function renderHome() {
   if (q) {
     items = items.filter(it => {
       const hay = [
-        it.issuer || "",
-        it.account || "",
-        it._projectName || "",
+        itemText(it.issuer),
+        itemText(it.account),
+        itemText(it._projectName),
       ].join(" ").toLowerCase();
       return hay.includes(q);
     });
@@ -181,12 +188,13 @@ export function renderHome() {
 
 function buildCard(item) {
   const isAll = state.currentProjectId === "_all_";
+  const payload = normalizeOtpPayload(item);
   const node = document.createElement("article");
   node.className = "code-card";
   if (item.pinned) node.classList.add("pinned");
   node.dataset.id = item.id;
   if (item._projectId) node.dataset.projectId = item._projectId;
-  if (item.type === "hotp") node.classList.add("hotp");
+  if (payload.type === "hotp") node.classList.add("hotp");
   const reorderable = canReorderCards();
   node.draggable = reorderable;
   node.classList.toggle("reorderable", reorderable);
@@ -201,24 +209,24 @@ function buildCard(item) {
 
   const info = document.createElement("div");
   info.className = "info";
-  const initCode = item.type === "hotp" ? '<span class="hint">点击 ↻ 生成</span>' : "••••••";
+  const initCode = payload.type === "hotp" ? '<span class="hint">点击 ↻ 生成</span>' : "••••••";
   info.innerHTML = `
     <div class="meta-row">
-      <span class="issuer">${escapeHtml(item.issuer || "(未命名)")}</span>
+      <span class="issuer">${escapeHtml(itemText(item.issuer) || "(未命名)")}</span>
     </div>
-    <span class="account">${escapeHtml(item.account || "")}</span>
+    <span class="account">${escapeHtml(itemText(item.account))}</span>
     <span class="code">${initCode}</span>
     <div class="badges">
-      <span class="badge">${(item.type || "totp").toUpperCase()}</span>
-      ${item.algorithm && item.algorithm !== "SHA1" ? `<span class="badge">${escapeHtml(item.algorithm)}</span>` : ""}
-      ${item.digits && Number(item.digits) !== 6 ? `<span class="badge">${item.digits}位</span>` : ""}
-      ${isAll && item._projectName ? `<span class="badge project">${escapeHtml(item._projectName)}</span>` : ""}
+      <span class="badge">${payload.type.toUpperCase()}</span>
+      ${payload.algorithm !== "SHA1" ? `<span class="badge">${escapeHtml(payload.algorithm)}</span>` : ""}
+      ${payload.digits !== 6 ? `<span class="badge">${payload.digits}位</span>` : ""}
+      ${isAll && itemText(item._projectName) ? `<span class="badge project">${escapeHtml(itemText(item._projectName))}</span>` : ""}
     </div>
   `;
 
   let ring = null;
   let extra = null;
-  if (item.type === "hotp") {
+  if (payload.type === "hotp") {
     extra = document.createElement("button");
     extra.type = "button";
     extra.className = "hotp-next";
@@ -297,7 +305,7 @@ async function togglePin(item) {
     item.pinned = target.pinned;
   }
   renderHome();
-  window.dispatchEvent(new CustomEvent("data-changed"));
+  dispatchHomeEvent("data-changed");
 }
 
 function bindCardReorder(node, item) {
@@ -436,7 +444,7 @@ function bindCardInteractions(node, item) {
       await togglePin(item);
     } else if (e.key.toLowerCase() === "e") {
       e.preventDefault();
-      const onEdit = window.__cardActions?.onEdit;
+      const onEdit = getCardActions().onEdit;
       if (typeof onEdit === "function") onEdit(item);
     }
   });
@@ -472,7 +480,7 @@ function startCopiedBadge(node) {
 }
 
 async function openCardSheet(item) {
-  const { onShare, onDelete, onEdit } = window.__cardActions || {};
+  const { onShare, onDelete, onEdit } = getCardActions();
   const canShare = !isLocalOnlyApp() && state.adminUnlocked && typeof onShare === "function";
   const actions = [
     { label: item.pinned ? "取消置顶" : "置顶", icon: item.pinned ? "★" : "☆", onClick: () => togglePin(item) },
@@ -485,13 +493,13 @@ async function openCardSheet(item) {
   if (typeof onEdit === "function") {
     actions.push({ label: "编辑账户", icon: "✏️", onClick: () => onEdit(item) });
   }
-  if (item.type === "totp" && canShare) {
+  if (normalizeOtpPayload(item).type === "totp" && canShare) {
     actions.push({ label: "分享验证码", icon: "📤", onClick: () => onShare(item) });
   }
   actions.push({ label: "删除", icon: "🗑", danger: true, onClick: () => {
     if (typeof onDelete === "function") onDelete(item);
   }});
-  await actionSheet({ title: `${item.issuer || ""} ${item.account ? "· " + item.account : ""}`.trim() || "操作", actions });
+  await actionSheet({ title: formatItemName(item) || "操作", actions });
 }
 
 function openSingleOtpAuthQr(item) {
@@ -553,8 +561,33 @@ function openSingleOtpAuthQr(item) {
   });
 }
 
-function formatItemName(item) {
-  return `${item.issuer || ""}${item.account ? " · " + item.account : ""}`.trim() || "未命名账户";
+export function formatItemName(item) {
+  const issuer = itemText(item?.issuer);
+  const account = itemText(item?.account);
+  if (issuer && account) return `${issuer} · ${account}`;
+  return issuer || account || "未命名账户";
+}
+
+export function formatProjectName(value) {
+  return itemText(value) || "未命名";
+}
+
+export function dispatchHomeEvent(name, detail) {
+  const target = globalThis.window;
+  if (!target || typeof target.dispatchEvent !== "function") return false;
+  const EventCtor = typeof globalThis.CustomEvent === "function"
+    ? globalThis.CustomEvent
+    : (typeof globalThis.Event === "function" ? globalThis.Event : null);
+  if (!EventCtor) return false;
+  try {
+    const event = EventCtor === globalThis.CustomEvent
+      ? new EventCtor(name, detail === undefined ? undefined : { detail })
+      : new EventCtor(name);
+    target.dispatchEvent(event);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function advanceHotp(item, node) {
@@ -564,14 +597,14 @@ async function advanceHotp(item, node) {
     if (!proj || !Array.isArray(proj.itemsData)) return;
     const target = proj.itemsData.find(x => x.id === item.id);
     if (!target) return;
-    target.counter = Number(target.counter || 0) + 1;
+    target.counter = normalizeOtpPayload(target).counter + 1;
     target.updatedAt = Date.now();
     item.counter = target.counter; // sync the displayed reference
     saveSyncProjects();
   } else {
     const target = state.items.find(x => x.id === item.id);
     if (!target) return;
-    target.counter = Number(target.counter || 0) + 1;
+    target.counter = normalizeOtpPayload(target).counter + 1;
     target.updatedAt = Date.now();
     item.counter = target.counter;
     await persist();
@@ -585,25 +618,26 @@ async function advanceHotp(item, node) {
   if (node) node.dataset.hotpShown = "1";
   await refreshCard(cardMap.get(item.id));
   toast("已生成下一次", "ok");
-  window.dispatchEvent(new CustomEvent("data-changed"));
+  dispatchHomeEvent("data-changed");
 }
 
 async function refreshCard(entry) {
   if (!entry) return;
   const { node, ring, item } = entry;
+  const payload = normalizeOtpPayload(item);
   // HOTP 卡片在用户点 ↻ 之前保持占位
-  if (item.type === "hotp" && node.dataset.hotpShown !== "1") {
+  if (payload.type === "hotp" && node.dataset.hotpShown !== "1") {
     return;
   }
   try {
     const code = await getCodeCached(item);
-    node.querySelector(".code").textContent = formatCode(code, item.digits);
+    node.querySelector(".code").textContent = formatCode(code, payload.digits);
   } catch {
     node.querySelector(".code").textContent = "ERR";
   }
-  if (item.type === "totp" && ring) {
-    const left = secondsLeft(item.period);
-    ring.update(left, item.period || 30);
+  if (payload.type === "totp" && ring) {
+    const left = secondsLeft(payload.period);
+    ring.update(left, payload.period);
     if (left <= 5) node.classList.add("expiring"); else node.classList.remove("expiring");
   }
 }
@@ -613,19 +647,47 @@ export async function tickHome() {
 }
 
 let ticker = null;
+let tickerEventsBound = false;
 export function startTicker() {
   if (ticker) clearTimeout(ticker);
   scheduleTick();
   // 9.2 visibility / focus 时立即对齐刷新一次
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      tickHome();
-      if (ticker) clearTimeout(ticker);
-      scheduleTick();
-    }
-  });
-  window.addEventListener("focus", () => { tickHome(); });
+  if (!tickerEventsBound) {
+    tickerEventsBound = bindHomeTickerEvents({
+      onVisible: () => {
+        tickHome();
+        if (ticker) clearTimeout(ticker);
+        scheduleTick();
+      },
+      onFocus: () => { tickHome(); },
+    });
+  }
 }
+
+export function bindHomeTickerEvents({
+  doc = globalThis.document,
+  win = globalThis.window,
+  onVisible = () => {},
+  onFocus = () => {},
+} = {}) {
+  let bound = false;
+  if (doc && typeof doc.addEventListener === "function") {
+    try {
+      doc.addEventListener("visibilitychange", () => {
+        if (doc.visibilityState === "visible") onVisible();
+      });
+      bound = true;
+    } catch {}
+  }
+  if (win && typeof win.addEventListener === "function") {
+    try {
+      win.addEventListener("focus", () => { onFocus(); });
+      bound = true;
+    } catch {}
+  }
+  return bound;
+}
+
 function scheduleTick() {
   // 对齐到下一秒边界，最多漂移到 1000ms
   const now = Date.now();
@@ -637,8 +699,26 @@ function scheduleTick() {
 }
 export function stopTicker() { if (ticker) { clearTimeout(ticker); ticker = null; } }
 
-export function setCardActions({ onShare, onDelete, onEdit }) {
-  window.__cardActions = { onShare, onDelete, onEdit };
+let fallbackCardActions = {};
+export function getCardActions() {
+  const target = globalThis.window;
+  if (target && typeof target === "object" && target.__cardActions) {
+    return target.__cardActions;
+  }
+  return fallbackCardActions;
+}
+
+export function setCardActions({ onShare, onDelete, onEdit } = {}) {
+  const actions = { onShare, onDelete, onEdit };
+  fallbackCardActions = actions;
+  const target = globalThis.window;
+  if (!target || typeof target !== "object") return false;
+  try {
+    target.__cardActions = actions;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ----- Project bar (top of home) -----
@@ -667,19 +747,28 @@ export function renderProjectBar(onSelect, onCreate) {
     chip.type = "button";
     chip.setAttribute("aria-pressed", p.id === state.currentProjectId ? "true" : "false");
     const dot = p.id === state.currentProjectId ? '<span class="chip-dot"></span>' : "";
-    chip.innerHTML = `${dot}<span>${escapeHtml(p.name || "未命名")}</span>`;
+    chip.innerHTML = `${dot}<span>${escapeHtml(formatProjectName(p.name))}</span>`;
     chip.addEventListener("click", () => onSelect(p.id));
     bar.appendChild(chip);
   }
 }
 
 function buildCardAriaLabel(item) {
+  const payload = normalizeOtpPayload(item);
   const bits = [
-    item.issuer || "未命名账户",
-    item.account || "",
-    (item.type || "totp").toUpperCase(),
+    itemText(item.issuer) || "未命名账户",
+    itemText(item.account),
+    payload.type.toUpperCase(),
   ].filter(Boolean);
-  if (item.type === "hotp") bits.push(`计数器 ${Number(item.counter || 0)}`);
-  else bits.push(`周期 ${Number(item.period || 30)} 秒`);
+  if (payload.type === "hotp") bits.push(`计数器 ${payload.counter}`);
+  else bits.push(`周期 ${payload.period} 秒`);
   return `${bits.join("，")}。按 Enter 复制验证码。`;
+}
+
+function itemText(value) {
+  return String(value || "").trim();
+}
+
+function itemSortKey(item) {
+  return `${itemText(item?.issuer)}::${itemText(item?.account)}`;
 }

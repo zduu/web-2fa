@@ -1,7 +1,7 @@
 // 导入/导出（明文 + 加密包），从原 app.js exportData / importData 移植
-import { state, getCurrentProject, persist, ensureItemDefaults, saveSyncProjects } from "../core/storage.js";
-import { deriveKey, toB64, fromB64 } from "../core/crypto.js";
-import { buildMigrationUrls } from "../core/totp.js";
+import { state, getCurrentProject, persist, ensureItemDefaults, saveSyncProjects, mergeShareRefs, normalizeStoredTimestamp } from "../core/storage.js";
+import { deriveKey, toB64, fromB64, normalizeKdfIterations } from "../core/crypto.js";
+import { buildMigrationUrls, normalizeOtpPayload } from "../core/totp.js";
 import { detectMigrationFile, decryptAndParseAndOtpBackup } from "../core/migration-formats.js";
 import { renderQrSvg } from "../core/qrgen.js";
 import { itemKey } from "../sync/sync.js";
@@ -127,7 +127,7 @@ export async function exportCurrentMigrationQrs() {
       const list = root.querySelector("#migration-qr-list");
       for (const group of groups) {
         const names = group.items.slice(0, 3)
-          .map((it) => `${it.issuer || ""}${it.account ? ` · ${it.account}` : ""}`.trim() || "未命名")
+          .map((it) => formatImportPreviewTitle(it) || "未命名")
           .join(" / ");
         const card = document.createElement("div");
         card.className = "migration-qr-card";
@@ -306,8 +306,7 @@ async function openImportEncrypted(pkg) {
         r.querySelector('[data-act="check"]').addEventListener("click", async () => {
           const pass = r.querySelector("#ip-pass").value.trim();
           if (!pass) { toast("请输入密码", "warn"); return; }
-          let iter = 200000;
-          if (typeof pkg.kdf === "string") { const m = pkg.kdf.match(/(\d+)/); if (m) iter = Number(m[1]) || iter; }
+          const iter = parseEncryptedImportKdfIterations(pkg.kdf);
           try {
             const key = await deriveKey(pass, fromB64(pkg.saltB64), iter);
             const iv = fromB64(pkg.iv); const ct = fromB64(pkg.ct);
@@ -327,8 +326,8 @@ async function openImportEncrypted(pkg) {
               div.className = "list-item";
               div.innerHTML = `
                 <div class="li-info">
-                  <div class="li-title">${escapeHtml(it.issuer || "")} ${it.account ? "· " + escapeHtml(it.account) : ""}</div>
-                  <div class="li-sub">${(it.type || "totp").toUpperCase()} · ${(it.algorithm || "SHA1").toUpperCase()} · ${it.digits || 6}位</div>
+                  <div class="li-title">${escapeHtml(formatImportPreviewTitle(it))}</div>
+                  <div class="li-sub">${escapeHtml(formatImportPreviewMeta(it))}</div>
                 </div>`;
               preview.appendChild(div);
             }
@@ -390,8 +389,8 @@ async function openImportPreview(result) {
           div.className = "list-item";
           div.innerHTML = `
             <div class="li-info">
-              <div class="li-title">${escapeHtml(it.issuer || "")}${it.account ? ` · ${escapeHtml(it.account)}` : ""}</div>
-              <div class="li-sub">${(it.type || "totp").toUpperCase()} · ${(it.algorithm || "SHA1").toUpperCase()} · ${it.digits || 6}位${it.type === "hotp" ? ` · counter ${it.counter || 0}` : ` · ${it.period || 30}s`}</div>
+              <div class="li-title">${escapeHtml(formatImportPreviewTitle(it))}</div>
+              <div class="li-sub">${escapeHtml(formatImportPreviewMeta(it))}</div>
             </div>`;
           preview.appendChild(div);
         }
@@ -423,10 +422,11 @@ async function mergeIntoCurrent(rawItems, strategy = "overwrite") {
 
   const existingByKey = new Map(items.map(it => [itemKey(it), it]));
   const impMap = new Map();
-  for (const it of rawItems) {
+  for (const raw of rawItems) {
+    const it = normalizeImportMergeItem(raw);
     const k = itemKey(it);
     const prev = impMap.get(k);
-    if (!prev || Number(it.updatedAt || 0) >= Number(prev.updatedAt || 0)) impMap.set(k, it);
+    if (!prev || normalizeStoredTimestamp(it.updatedAt, 0) >= normalizeStoredTimestamp(prev.updatedAt, 0)) impMap.set(k, it);
   }
   let added = 0, updated = 0, kept = 0;
   for (const [k, it] of impMap.entries()) {
@@ -440,28 +440,7 @@ async function mergeIntoCurrent(rawItems, strategy = "overwrite") {
         const copy = { ...it, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
         items.push(copy); added++; continue;
       }
-      // overwrite
-      const sharesA = Array.isArray(exist.shares) ? exist.shares : [];
-      const sharesB = Array.isArray(it.shares) ? it.shares : [];
-      const bySid = new Map();
-      for (const s of [...sharesA, ...sharesB]) {
-        const entry = (typeof s === "string") ? { sid: s } : (s && typeof s.sid === "string" ? { sid: s.sid, k: s.k } : null);
-        if (!entry) continue;
-        if (!bySid.has(entry.sid)) bySid.set(entry.sid, entry);
-        else { const prev = bySid.get(entry.sid); if (!prev.k && entry.k) prev.k = entry.k; }
-      }
-      exist.type = it.type;
-      exist.issuer = it.issuer;
-      exist.account = it.account;
-      exist.password = typeof it.password === "string" ? it.password : (exist.password || "");
-      exist.secret = (it.secret || "").replace(/\s+/g, "").toUpperCase();
-      exist.algorithm = (it.algorithm || "SHA1").toUpperCase();
-      exist.digits = Number(it.digits || 6);
-      exist.period = Number(it.period || 30);
-      exist.counter = Number(it.counter || 0);
-      exist.deleted = !!it.deleted;
-      exist.updatedAt = Number(it.updatedAt || Date.now());
-      exist.shares = Array.from(bySid.values());
+      applyImportedItemOverwrite(exist, it);
       updated++;
     }
   }
@@ -476,6 +455,85 @@ async function mergeIntoCurrent(rawItems, strategy = "overwrite") {
   }
   await persist();
   return { added, updated, kept };
+}
+
+export function applyImportedItemOverwrite(existing, incoming, now = Date.now()) {
+  const normalized = normalizeImportMergeItem(incoming, existing?.password || "", now);
+  const shares = mergeShareRefs(existing?.shares, incoming?.shares);
+
+  existing.type = normalized.type;
+  existing.issuer = normalized.issuer || "";
+  existing.account = normalized.account || "";
+  existing.password = normalized.password;
+  existing.secret = normalized.secret;
+  existing.algorithm = normalized.algorithm;
+  existing.digits = normalized.digits;
+  existing.period = normalized.period;
+  existing.counter = normalized.counter;
+  existing.deleted = normalized.deleted;
+  if (hasOwnImportField(incoming, "note")) existing.note = normalized.note;
+  if (hasOwnImportField(incoming, "pinned")) existing.pinned = normalized.pinned;
+  existing.updatedAt = normalized.updatedAt;
+  existing.shares = shares;
+  return existing;
+}
+
+function hasOwnImportField(value, key) {
+  return !!value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+export function formatImportPreviewMeta(item) {
+  const payload = normalizeOtpPayload(item);
+  const parts = [
+    payload.type.toUpperCase(),
+    payload.algorithm,
+    `${payload.digits}位`,
+  ];
+  if (payload.type === "hotp") parts.push(`counter ${payload.counter}`);
+  else parts.push(`${payload.period}s`);
+  return parts.join(" · ");
+}
+
+export function formatImportPreviewTitle(item) {
+  const issuer = String(item?.issuer || "").trim();
+  const account = String(item?.account || "").trim();
+  if (issuer && account) return `${issuer} · ${account}`;
+  return issuer || account || "";
+}
+
+export function parseEncryptedImportKdfIterations(kdf, fallback = 200_000) {
+  const normalizedFallback = normalizeKdfIterations(fallback, 200_000);
+  if (typeof kdf !== "string") return normalizedFallback;
+  const matches = Array.from(kdf.matchAll(/(\d+(?:\.\d+)?)\s*([kKmM])?\b/g));
+  const match = matches.at(-1);
+  if (!match) return normalizedFallback;
+
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return normalizedFallback;
+  const suffix = String(match[2] || "").toLowerCase();
+  const scale = suffix === "m" ? 1_000_000 : (suffix === "k" ? 1_000 : 1);
+  return normalizeKdfIterations(value * scale, normalizedFallback);
+}
+
+export function normalizeExportItem(item, now = Date.now()) {
+  return ensureItemDefaults({
+    ...item,
+    issuer: String(item?.issuer || "").trim(),
+    account: String(item?.account || "").trim(),
+    password: typeof item?.password === "string" ? item.password : "",
+    note: typeof item?.note === "string" ? item.note : "",
+    updatedAt: normalizeStoredTimestamp(item?.updatedAt, now),
+  });
+}
+
+function normalizeImportMergeItem(raw, fallbackPassword = "", now = Date.now()) {
+  return ensureItemDefaults({
+    ...raw,
+    issuer: String(raw?.issuer || "").trim(),
+    account: String(raw?.account || "").trim(),
+    password: typeof raw?.password === "string" ? raw.password : fallbackPassword,
+    updatedAt: normalizeStoredTimestamp(raw?.updatedAt, now),
+  });
 }
 
 function collectCurrentProjectExportItems() {
@@ -497,11 +555,12 @@ function collectCurrentProjectExportItems() {
     if (it.deleted) continue;
     const k = itemKey(it);
     const prev = map.get(k);
-    if (!prev || Number(it.updatedAt || 0) >= Number(prev.updatedAt || 0)) map.set(k, it);
+    if (!prev || normalizeStoredTimestamp(it.updatedAt, 0) >= normalizeStoredTimestamp(prev.updatedAt, 0)) map.set(k, it);
   }
 
   const sourceLabel = scope.kind === "project" ? (scope.proj.name || scope.proj.syncId || "project") : "本地账户库";
-  return { scope, cleaned: Array.from(map.values()), sourceLabel };
+  const cleaned = Array.from(map.values()).map((item) => normalizeExportItem(item));
+  return { scope, cleaned, sourceLabel };
 }
 
 // 当前作用域已存在的条目（用于预检查）

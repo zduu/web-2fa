@@ -3,7 +3,16 @@
 
 import { openModal } from "./modal.js";
 import { toast } from "./toast.js";
-import { parseOtpAuth, parseOtpAuthMigration, codeForItem, formatCode, secondsLeft } from "../core/totp.js";
+import {
+  codeForItem,
+  formatCode,
+  isOtpAuthMigrationUri,
+  normalizeOtpPayload,
+  normalizeOtpSecret,
+  parseOtpAuth,
+  parseOtpAuthMigration,
+  secondsLeft,
+} from "../core/totp.js";
 
 export function openAddModal({ onSubmit, onScan } = {}) {
   let activeTab = "manual";
@@ -337,10 +346,7 @@ export function openEditModal(item, { onSubmit } = {}) {
       doPreview();
       const tick = setInterval(doPreview, 1000);
       // 关闭模态时清 ticker
-      const obs = new MutationObserver(() => {
-        if (!document.body.contains(r)) { clearInterval(tick); obs.disconnect(); }
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
+      watchAddPreviewDetach(r, () => clearInterval(tick));
 
       r.querySelector('[data-act="cancel"]').addEventListener("click", doClose);
       r.querySelector('[data-act="ok"]').addEventListener("click", () => {
@@ -353,46 +359,97 @@ export function openEditModal(item, { onSubmit } = {}) {
   });
 }
 
+export function watchAddPreviewDetach(rootEl, onDetach, {
+  doc = globalThis.document,
+  MutationObserverCtor = globalThis.MutationObserver,
+} = {}) {
+  if (!rootEl || typeof onDetach !== "function") return false;
+  const body = doc?.body;
+  if (!body || typeof body.contains !== "function") return false;
+
+  const isDetached = () => {
+    try { return !body.contains(rootEl); }
+    catch { return true; }
+  };
+  const cleanup = () => {
+    try { onDetach(); } catch {}
+  };
+
+  if (isDetached()) {
+    cleanup();
+    return true;
+  }
+  if (typeof MutationObserverCtor !== "function") return false;
+
+  try {
+    const obs = new MutationObserverCtor(() => {
+      if (!isDetached()) return;
+      cleanup();
+      try { obs.disconnect(); } catch {}
+    });
+    obs.observe(body, { childList: true, subtree: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 静默版本（不弹 toast，用于实时预览）
 function collectManualSilent(r) {
-  const secret = (r.querySelector("#f-secret")?.value || "").trim().replace(/\s+/g, "").toUpperCase();
+  const secret = normalizeOtpSecret(r.querySelector("#f-secret")?.value);
   if (!secret) return null;
-  const type = r.querySelector("#f-type").value;
+  const otp = collectOtpFields(r, secret);
   const item = {
-    type,
+    ...otp,
     issuer: r.querySelector("#f-issuer").value.trim(),
     account: r.querySelector("#f-account").value.trim(),
-    secret,
-    algorithm: r.querySelector("#f-algo").value,
-    digits: Number(r.querySelector("#f-digits").value || 6),
   };
-  if (type === "totp") item.period = Number(r.querySelector("#f-period").value || 30);
-  else item.counter = Number(r.querySelector("#f-counter").value || 0);
   return item;
 }
 
 function collectManual(r) {
-  const secret = r.querySelector("#f-secret").value.trim().replace(/\s+/g, "").toUpperCase();
+  const secret = normalizeOtpSecret(r.querySelector("#f-secret").value);
   if (!secret) { toast("请输入 Secret", "warn"); return null; }
-  const type = r.querySelector("#f-type").value;
+  const otp = collectOtpFields(r, secret);
   const item = {
-    type,
+    ...otp,
     issuer: r.querySelector("#f-issuer").value.trim(),
     account: r.querySelector("#f-account").value.trim(),
     password: r.querySelector("#f-password")?.value ?? "",
+  };
+  return item;
+}
+
+function collectOtpFields(r, secret) {
+  const payload = normalizeOtpPayload({
+    type: r.querySelector("#f-type").value,
     secret,
     algorithm: r.querySelector("#f-algo").value,
-    digits: Number(r.querySelector("#f-digits").value || 6),
-  };
-  if (type === "totp") item.period = Number(r.querySelector("#f-period").value || 30);
-  else item.counter = Number(r.querySelector("#f-counter").value || 0);
-  return item;
+    digits: r.querySelector("#f-digits").value,
+    period: r.querySelector("#f-period").value,
+    counter: r.querySelector("#f-counter").value,
+  });
+  return payload.type === "hotp"
+    ? {
+        type: payload.type,
+        secret: payload.secret,
+        algorithm: payload.algorithm,
+        digits: payload.digits,
+        counter: payload.counter,
+      }
+    : {
+        type: payload.type,
+        secret: payload.secret,
+        algorithm: payload.algorithm,
+        digits: payload.digits,
+        period: payload.period,
+      };
 }
 
 function collectLink(r) {
   const txt = r.querySelector("#f-otpauth").value.trim();
   if (!txt) { toast("请粘贴 otpauth 链接", "warn"); return null; }
-  if (txt.startsWith("otpauth-migration://") || /^[A-Za-z0-9_\-]+=*$/.test(txt)) {
+  if (isOtpAuthMigrationUri(txt) || /^[A-Za-z0-9_\-]+=*$/.test(txt)) {
     const items = parseOtpAuthMigration(txt);
     if (!items.length) { toast("未解析到迁移数据", "err"); return null; }
     return items;
@@ -403,16 +460,17 @@ function collectLink(r) {
 }
 
 function normalizeItem(item) {
+  const payload = normalizeOtpPayload(item);
   return {
-    type: item?.type === "hotp" ? "hotp" : "totp",
+    type: payload.type,
     issuer: item?.issuer || "",
     account: item?.account || "",
     password: item?.password || "",
-    secret: (item?.secret || "").replace(/\s+/g, "").toUpperCase(),
-    algorithm: (item?.algorithm || "SHA1").toUpperCase(),
-    digits: Number(item?.digits || 6),
-    period: Number(item?.period || 30),
-    counter: Number(item?.counter || 0),
+    secret: payload.secret,
+    algorithm: payload.algorithm,
+    digits: payload.digits,
+    period: payload.period || 30,
+    counter: payload.counter || 0,
   };
 }
 

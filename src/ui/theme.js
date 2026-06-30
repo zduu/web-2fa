@@ -8,51 +8,87 @@ const THEME_COLOR = {
 
 let mediaBound = false;
 
+export function normalizeThemePreference(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "dark" || normalized === "light" || normalized === "auto" ? normalized : "dark";
+}
+
 export function getThemePreference() {
   let value = null;
   try { value = localStorage.getItem(LS_THEME); } catch {}
-  return value === "dark" || value === "light" || value === "auto" ? value : "dark";
+  return normalizeThemePreference(value);
 }
 
 export function resolveTheme(pref = getThemePreference()) {
-  if (pref === "dark" || pref === "light") return pref;
+  const normalized = normalizeThemePreference(pref);
+  if (normalized === "dark" || normalized === "light") return normalized;
   if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-    return window.matchMedia(MEDIA_QUERY).matches ? "dark" : "light";
+    try { return window.matchMedia(MEDIA_QUERY).matches ? "dark" : "light"; }
+    catch {}
   }
   return "dark";
 }
 
 export function applyTheme(pref = getThemePreference()) {
-  const root = document.documentElement;
-  const resolved = resolveTheme(pref);
-  root.dataset.theme = pref;
-  root.dataset.themeResolved = resolved;
-  root.style.colorScheme = resolved;
+  const preference = normalizeThemePreference(pref);
+  const resolved = resolveTheme(preference);
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  if (root) {
+    root.dataset.theme = preference;
+    root.dataset.themeResolved = resolved;
+    root.style.colorScheme = resolved;
+  }
 
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", THEME_COLOR[resolved] || THEME_COLOR.dark);
+  try {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", THEME_COLOR[resolved] || THEME_COLOR.dark);
+  } catch {}
 
-  return { preference: pref, resolved };
+  return { preference, resolved };
 }
 
 export function setThemePreference(pref) {
-  const normalized = pref === "light" || pref === "auto" ? pref : "dark";
+  const normalized = normalizeThemePreference(pref);
   try { localStorage.setItem(LS_THEME, normalized); } catch {}
   const next = applyTheme(normalized);
-  try {
-    window.dispatchEvent(new CustomEvent("theme-changed", { detail: next }));
-  } catch {}
+  dispatchThemeChanged(next);
   return next;
+}
+
+export function dispatchThemeChanged(detail) {
+  const target = globalThis.window;
+  if (!target || typeof target.dispatchEvent !== "function") return false;
+  const EventCtor = typeof globalThis.CustomEvent === "function"
+    ? globalThis.CustomEvent
+    : (typeof globalThis.Event === "function" ? globalThis.Event : null);
+  if (!EventCtor) return false;
+  try {
+    const event = EventCtor === globalThis.CustomEvent
+      ? new EventCtor("theme-changed", { detail })
+      : new EventCtor("theme-changed");
+    target.dispatchEvent(event);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function initTheme() {
   const current = applyTheme();
   if (!mediaBound && typeof window !== "undefined" && typeof window.matchMedia === "function") {
-    mediaBound = true;
-    const mq = window.matchMedia(MEDIA_QUERY);
-    mq.addEventListener("change", () => {
-      if (getThemePreference() === "auto") applyTheme("auto");
-    });
+    try {
+      const mq = window.matchMedia(MEDIA_QUERY);
+      const onChange = () => {
+        if (getThemePreference() === "auto") applyTheme("auto");
+      };
+      if (mq && typeof mq.addEventListener === "function") {
+        mq.addEventListener("change", onChange);
+        mediaBound = true;
+      } else if (mq && typeof mq.addListener === "function") {
+        mq.addListener(onChange);
+        mediaBound = true;
+      }
+    } catch {}
   }
   return current;
 }
