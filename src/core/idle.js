@@ -11,6 +11,7 @@ export const LS_HIDDEN_LOCK = "authenticator.v1.hiddenLockMinutes";
 
 const DEFAULT_IDLE = 10;   // 分钟，0 = 禁用
 const DEFAULT_HIDDEN = 5;  // 分钟，0 = 禁用
+const MAX_LOCK_MINUTES = 1440;
 const CHECK_INTERVAL_MS = 30 * 1000;
 
 let lastActive = Date.now();
@@ -20,22 +21,26 @@ let bound = false;
 let onLockCb = null;
 
 export function getIdleMinutes() {
-  const raw = localStorage.getItem(LS_IDLE_LOCK);
+  const raw = readLocalStorage(LS_IDLE_LOCK);
   if (raw === null) return DEFAULT_IDLE;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE;
+  return normalizeLockMinutes(raw, DEFAULT_IDLE);
 }
 export function setIdleMinutes(n) {
-  localStorage.setItem(LS_IDLE_LOCK, String(Math.max(0, Math.min(1440, Number(n) || 0))));
+  writeLocalStorage(LS_IDLE_LOCK, String(normalizeLockMinutes(n, 0)));
 }
 export function getHiddenMinutes() {
-  const raw = localStorage.getItem(LS_HIDDEN_LOCK);
+  const raw = readLocalStorage(LS_HIDDEN_LOCK);
   if (raw === null) return DEFAULT_HIDDEN;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_HIDDEN;
+  return normalizeLockMinutes(raw, DEFAULT_HIDDEN);
 }
 export function setHiddenMinutes(n) {
-  localStorage.setItem(LS_HIDDEN_LOCK, String(Math.max(0, Math.min(1440, Number(n) || 0))));
+  writeLocalStorage(LS_HIDDEN_LOCK, String(normalizeLockMinutes(n, 0)));
+}
+
+export function normalizeLockMinutes(value, fallback) {
+  const minutes = Math.trunc(Number(value));
+  if (!Number.isFinite(minutes) || minutes < 0) return fallback;
+  return Math.min(MAX_LOCK_MINUTES, minutes);
 }
 
 function pump() {
@@ -45,15 +50,17 @@ function pump() {
 
 export function startIdleWatcher(onLock) {
   onLockCb = onLock;
+  const doc = globalThis.document;
+  if (!doc || typeof doc.addEventListener !== "function") return;
   if (bound) return;
-  bound = true;
-  ["mousemove", "keydown", "pointerdown", "touchstart", "wheel"].forEach(ev => {
-    window.addEventListener(ev, pump, { passive: true });
+  bound = bindIdleWatcherEvents({
+    doc,
+    win: globalThis.window,
+    onActivity: pump,
+    onHidden: () => { hiddenAt = Date.now(); },
+    onVisible: () => { hiddenAt = 0; pump(); },
   });
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") hiddenAt = Date.now();
-    else { hiddenAt = 0; pump(); }
-  });
+  if (!bound) return;
   if (checkTimer) clearInterval(checkTimer);
   checkTimer = setInterval(check, CHECK_INTERVAL_MS);
 }
@@ -95,6 +102,52 @@ function triggerLock(reason) {
   hiddenAt = 0;
   lastActive = Date.now();
   try { onLockCb?.(reason); } catch (e) { console.error(e); }
+}
+
+export function getIdleVisibilityState(doc = globalThis.document) {
+  try {
+    return String(doc?.visibilityState || "");
+  } catch {
+    return "";
+  }
+}
+
+export function bindIdleWatcherEvents({
+  doc = globalThis.document,
+  win = globalThis.window,
+  onActivity = () => {},
+  onHidden = () => {},
+  onVisible = () => {},
+} = {}) {
+  let boundAny = false;
+  if (win && typeof win.addEventListener === "function") {
+    for (const ev of ["mousemove", "keydown", "pointerdown", "touchstart", "wheel"]) {
+      try {
+        win.addEventListener(ev, onActivity, { passive: true });
+        boundAny = true;
+      } catch {}
+    }
+  }
+  if (doc && typeof doc.addEventListener === "function") {
+    try {
+      doc.addEventListener("visibilitychange", () => {
+        if (getIdleVisibilityState(doc) === "hidden") onHidden();
+        else onVisible();
+      });
+      boundAny = true;
+    } catch {}
+  }
+  return boundAny;
+}
+
+function readLocalStorage(key) {
+  try { return globalThis.localStorage?.getItem(key) ?? null; }
+  catch { return null; }
+}
+
+function writeLocalStorage(key, value) {
+  try { globalThis.localStorage?.setItem(key, value); }
+  catch {}
 }
 
 // 测试用：手动触发

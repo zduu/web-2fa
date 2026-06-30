@@ -1,11 +1,32 @@
 // 加密原语：AES-GCM + PBKDF2 + RSA-OAEP + Base64 工具
 // 移植自原 app.js 第 287-303、1974-1979、1996-2008、2306-2343 行
 
+function toUint8Array(value) {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return new Uint8Array(value || []);
+}
+
 export function toB64(arr) {
-  return btoa(String.fromCharCode.apply(null, Array.from(arr)));
+  const bytes = toUint8Array(arr);
+  if (typeof btoa !== "function" && typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64");
+  }
+  let bin = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(bin);
 }
 
 export function fromB64(b64) {
+  if (typeof atob !== "function" && typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(String(b64 || ""), "base64"));
+  }
   const bin = atob(b64 || "");
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -17,7 +38,7 @@ export function b64url(bytes) {
 }
 
 export function fromB64url(s) {
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  s = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
   const pad = (4 - (s.length % 4)) % 4;
   if (pad) s += "=".repeat(pad);
   return fromB64(s);
@@ -26,14 +47,29 @@ export function fromB64url(s) {
 // ---------- KDF / AES-GCM ----------
 // 5.12 默认迭代 600k（OWASP 2023 推荐）；旧 meta 中存了 iter 字段则按它解密
 export const KDF_ITERATIONS_DEFAULT = 600_000;
+export const KDF_ITERATIONS_MIN = 1_000;
+export const KDF_ITERATIONS_MAX = 10_000_000;
+
+export function normalizeKdfIterations(value, fallback = KDF_ITERATIONS_DEFAULT) {
+  const iterations = Math.trunc(Number(value));
+  if (
+    !Number.isFinite(iterations) ||
+    iterations < KDF_ITERATIONS_MIN ||
+    iterations > KDF_ITERATIONS_MAX
+  ) {
+    return fallback;
+  }
+  return iterations;
+}
 
 export async function deriveKey(password, salt, iterations = KDF_ITERATIONS_DEFAULT) {
   const enc = new TextEncoder();
+  const normalizedIterations = normalizeKdfIterations(iterations);
   const baseKey = await crypto.subtle.importKey(
     "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
   );
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: normalizedIterations, hash: "SHA-256" },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false, ["encrypt", "decrypt"]
@@ -76,10 +112,7 @@ function decodePemOrB64(str) {
          .replace(/-----END [^-]+-----/g, "")
          .replace(/\s+/g, "");
   }
-  const bin = atob(s);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr.buffer;
+  return fromB64(s).buffer;
 }
 
 export async function importRsaPublicKey(pemOrB64) {

@@ -1,7 +1,7 @@
 // 本地存储：localStorage 读写、主密码 AES-GCM 加解密、项目持久化
 // 完全保留旧 schema 以保证数据迁移零干预
 
-import { deriveKey, toB64, fromB64, KDF_ITERATIONS_DEFAULT } from "./crypto.js";
+import { deriveKey, toB64, fromB64, KDF_ITERATIONS_DEFAULT, normalizeKdfIterations } from "./crypto.js";
 import {
   createLocalUnlockPasskey,
   evaluatePasskeyPrf,
@@ -9,6 +9,14 @@ import {
   unwrapBytesWithPasskeyPrf,
   wrapBytesWithPasskeyPrf,
 } from "./passkey.js";
+import {
+  normalizeHotpCounter,
+  normalizeOtpAlgorithm,
+  normalizeOtpDigits,
+  normalizeOtpPeriod,
+  normalizeOtpSecret,
+  normalizeOtpType,
+} from "./totp.js";
 
 export const LS_KEY = "authenticator.v1";
 export const LS_META = "authenticator.v1.meta";
@@ -16,6 +24,9 @@ export const LS_SYNC_PROJECTS = "authenticator.v1.syncProjects";
 export const LS_GLOBAL_TOKEN = "authenticator.v1.globalToken";
 export const LS_CURRENT_PROJECT = "authenticator.v1.currentProjectId";
 export const SS_ADMIN_UNLOCKED = "authenticator.v1.adminUnlocked";
+export const SYNC_AUTO_INTERVAL_DEFAULT = 60_000;
+export const SYNC_AUTO_INTERVAL_MIN = 5_000;
+export const SYNC_AUTO_INTERVAL_MAX = 24 * 3600_000;
 
 let syncProjectsSaveQueue = Promise.resolve();
 let syncProjectsSaveGeneration = 0;
@@ -36,28 +47,77 @@ export const state = {
   cloudSelectedProjects: new Set(),
 };
 
-export function ensureItemDefaults(it) {
-  const out = { ...it };
-  out.password = typeof out.password === "string" ? out.password : "";
-  out.secret = (out.secret || "").replace(/\s+/g, "").toUpperCase();
-  out.type = out.type || "totp";
-  out.algorithm = (out.algorithm || "SHA1").toUpperCase();
-  out.digits = Number(out.digits || 6);
-  out.period = Number(out.period || 30);
-  if (out.type === "hotp") out.counter = Number(out.counter || 0);
-  out.updatedAt = Number(out.updatedAt || Date.now());
-  out.deleted = !!out.deleted;
-  out.pinned = !!out.pinned;
-  out.note = typeof out.note === "string" ? out.note : "";
-  if (Array.isArray(out.shares)) {
-    out.shares = out.shares.map(s => {
-      if (typeof s === "string") return { sid: s };
-      if (s && typeof s.sid === "string") return { sid: s.sid, k: (typeof s.k === "string" && s.k) ? s.k : undefined };
-      return null;
-    }).filter(Boolean);
-  } else {
-    out.shares = [];
+export function normalizeShareRefs(shares) {
+  if (!Array.isArray(shares)) return [];
+  return shares.map((share) => {
+    if (typeof share === "string") {
+      const sid = share.trim();
+      return sid ? { sid } : null;
+    }
+    if (share && typeof share.sid === "string") {
+      const sid = share.sid.trim();
+      if (!sid) return null;
+      const k = typeof share.k === "string" && share.k ? share.k : undefined;
+      return { sid, k };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+export function mergeShareRefs(...groups) {
+  const bySid = new Map();
+  for (const share of groups.flatMap(normalizeShareRefs)) {
+    if (!bySid.has(share.sid)) {
+      bySid.set(share.sid, share);
+      continue;
+    }
+    const prev = bySid.get(share.sid);
+    if (!prev.k && share.k) prev.k = share.k;
   }
+  return Array.from(bySid.values());
+}
+
+export function normalizeStoredTimestamp(value, fallback = Date.now()) {
+  const ts = Math.trunc(Number(value));
+  if (!Number.isFinite(ts) || ts <= 0 || ts > Number.MAX_SAFE_INTEGER) return fallback;
+  return ts;
+}
+
+export function normalizeSyncAutoInterval(value, fallback = SYNC_AUTO_INTERVAL_DEFAULT) {
+  const interval = Math.trunc(Number(value));
+  if (!Number.isFinite(interval) || interval < SYNC_AUTO_INTERVAL_MIN || interval > SYNC_AUTO_INTERVAL_MAX) return fallback;
+  return interval;
+}
+
+function normalizeStoredBoolean(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value === null || value === undefined) return false;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "y";
+  }
+  return false;
+}
+
+export function ensureItemDefaults(it, options = {}) {
+  const timestampFallback = options && typeof options === "object" && "updatedAtFallback" in options
+    ? options.updatedAtFallback
+    : Date.now();
+  const out = { ...it };
+  out.issuer = String(out.issuer || "").trim();
+  out.account = String(out.account || "").trim();
+  out.password = typeof out.password === "string" ? out.password : "";
+  out.secret = normalizeOtpSecret(out.secret);
+  out.type = normalizeOtpType(out.type);
+  out.algorithm = normalizeOtpAlgorithm(out.algorithm);
+  out.digits = normalizeOtpDigits(out.digits || 6);
+  out.period = normalizeOtpPeriod(out.period || 30);
+  out.counter = normalizeHotpCounter(out.counter ?? 0);
+  out.updatedAt = normalizeStoredTimestamp(out.updatedAt, timestampFallback);
+  out.deleted = normalizeStoredBoolean(out.deleted);
+  out.pinned = normalizeStoredBoolean(out.pinned);
+  out.note = typeof out.note === "string" ? out.note : "";
+  out.shares = normalizeShareRefs(out.shares);
   return out;
 }
 
@@ -97,27 +157,38 @@ async function decryptJsonPayload(parsed, key) {
   return JSON.parse(new TextDecoder().decode(new Uint8Array(plain)));
 }
 
-function normalizeSyncProjects(projects) {
-  return (Array.isArray(projects) ? projects : []).map((project) => ({
+export function normalizeSyncProject(project) {
+  return {
     ...project,
+    id: String(project?.id || "").trim(),
+    name: String(project?.name || "").trim(),
+    syncId: String(project?.syncId || "").trim(),
+    secret: typeof project?.secret === "string" ? project.secret.trim() : "",
+    auto: normalizeStoredBoolean(project?.auto),
+    autoInterval: normalizeSyncAutoInterval(project?.autoInterval),
+    lastSyncedAt: normalizeStoredTimestamp(project?.lastSyncedAt, 0),
     itemsData: Array.isArray(project?.itemsData)
       ? project.itemsData.map(ensureItemDefaults)
       : [],
     itemOrder: Array.isArray(project?.itemOrder) ? project.itemOrder.slice() : [],
-  }));
+  };
+}
+
+function normalizeSyncProjects(projects) {
+  return (Array.isArray(projects) ? projects : []).map(normalizeSyncProject);
 }
 
 function applySyncProjectsPayload(payload, fallbackCurrentProjectId = null) {
   const projects = Array.isArray(payload) ? payload : payload?.projects;
   state.syncProjects = normalizeSyncProjects(projects);
-  state.currentProjectId = (Array.isArray(payload) ? fallbackCurrentProjectId : payload?.currentProjectId) || fallbackCurrentProjectId || null;
-  if (!state.currentProjectId && state.syncProjects.length) state.currentProjectId = state.syncProjects[0].id;
+  const requestedCurrentProjectId = Array.isArray(payload) ? fallbackCurrentProjectId : (payload?.currentProjectId || fallbackCurrentProjectId);
+  state.currentProjectId = normalizeCurrentProjectId(requestedCurrentProjectId, state.syncProjects);
 
   if (state.currentProjectId === "_all_") {
     state.items = [];
     for (const p of state.syncProjects) {
       for (const it of p.itemsData || []) {
-        state.items.push({ ...it, _projectId: p.id, _projectName: p.name || "未命名" });
+        state.items.push({ ...it, _projectId: p.id, _projectName: normalizeProjectDisplayName(p.name) });
       }
     }
     return;
@@ -127,27 +198,56 @@ function applySyncProjectsPayload(payload, fallbackCurrentProjectId = null) {
   if (current) state.items = current.itemsData.map((it) => ({ ...it }));
 }
 
+function normalizeProjectDisplayName(value) {
+  return String(value || "").trim() || "未命名";
+}
+
+function normalizeCurrentProjectId(value, projects) {
+  const requested = String(value || "").trim();
+  const list = Array.isArray(projects) ? projects : [];
+  if (requested === "_all_") return list.length ? "_all_" : null;
+  if (requested && list.some((project) => project.id === requested)) return requested;
+  return list.find((project) => project.id)?.id || null;
+}
+
+function readLocalStorage(key, fallback = null) {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function removeLocalStorage(key) {
+  try {
+    globalThis.localStorage?.removeItem(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function loadSyncProjectsAfterUnlock() {
   try {
-    const raw = localStorage.getItem(LS_SYNC_PROJECTS);
+    const raw = readLocalStorage(LS_SYNC_PROJECTS);
     if (!raw) {
       state.syncProjects = [];
-      state.currentProjectId = localStorage.getItem(LS_CURRENT_PROJECT) || null;
+      state.currentProjectId = readLocalStorage(LS_CURRENT_PROJECT);
       return;
     }
 
     const parsed = JSON.parse(raw);
     if (isEncryptedPayload(parsed)) {
       const payload = await decryptJsonPayload(parsed, state.key);
-      applySyncProjectsPayload(payload, localStorage.getItem(LS_CURRENT_PROJECT) || null);
+      applySyncProjectsPayload(payload, readLocalStorage(LS_CURRENT_PROJECT));
       return;
     }
 
     // Legacy plaintext project cache. Load it once, then the caller re-saves it encrypted.
-    applySyncProjectsPayload(parsed, localStorage.getItem(LS_CURRENT_PROJECT) || null);
+    applySyncProjectsPayload(parsed, readLocalStorage(LS_CURRENT_PROJECT));
   } catch {
     state.syncProjects = [];
-    state.currentProjectId = localStorage.getItem(LS_CURRENT_PROJECT) || null;
+    state.currentProjectId = readLocalStorage(LS_CURRENT_PROJECT);
   }
 }
 
@@ -164,10 +264,10 @@ export async function persist() {
 }
 
 export function load() {
-  const metaStr = localStorage.getItem(LS_META);
-  const data = localStorage.getItem(LS_KEY);
+  const metaStr = readLocalStorage(LS_META);
+  const data = readLocalStorage(LS_KEY);
   if (!data) {
-    if (metaStr) localStorage.removeItem(LS_META);
+    if (metaStr) removeLocalStorage(LS_META);
     state.items = [];
     state.unlocked = true;
     return;
@@ -187,17 +287,17 @@ export function load() {
 }
 
 export async function tryUnlock(password) {
-  const metaStr = localStorage.getItem(LS_META);
-  const data = localStorage.getItem(LS_KEY);
+  const metaStr = readLocalStorage(LS_META);
+  const data = readLocalStorage(LS_KEY);
   if (!metaStr || !data) {
     state.unlocked = true;
     return true;
   }
-  const meta = JSON.parse(metaStr);
   try {
+    const meta = JSON.parse(metaStr);
     if (meta.v === 2 && meta.master) {
       // 新格式 KEK/DEK
-      const iter = Number(meta.iter) || KDF_ITERATIONS_DEFAULT;
+      const iter = normalizeKdfIterations(meta.iter);
       const salt = fromB64(meta.master.saltB64);
       const kek = await deriveKey(password, salt, iter);
       const dekBytes = await unwrapDek(meta.master.wrappedDek, kek);
@@ -217,7 +317,7 @@ export async function tryUnlock(password) {
     }
     // legacy v1：主密码直接派生 key
     const salt = fromB64(meta.saltB64);
-    const iter = Number(meta.iter) > 0 ? Number(meta.iter) : 150000;
+    const iter = normalizeKdfIterations(meta.iter, 150000);
     state.key = await deriveKey(password, salt, iter);
     state.encMeta = meta;
     let txt;
@@ -302,7 +402,7 @@ export async function generateRecoveryCode() {
 
 export function hasRecoveryCode() {
   try {
-    const meta = JSON.parse(localStorage.getItem(LS_META) || "null");
+    const meta = JSON.parse(readLocalStorage(LS_META) || "null");
     return !!(meta && meta.v === 2 && meta.recovery && meta.recovery.wrappedDek);
   } catch { return false; }
 }
@@ -319,7 +419,7 @@ export async function getPasskeySupport() {
 
 export function hasPasskeyUnlock() {
   try {
-    const meta = JSON.parse(localStorage.getItem(LS_META) || "null");
+    const meta = JSON.parse(readLocalStorage(LS_META) || "null");
     return !!(meta && meta.v === 2 && meta.passkey && meta.passkey.credentialId && meta.passkey.wrappedDek);
   } catch {
     return false;
@@ -328,7 +428,7 @@ export function hasPasskeyUnlock() {
 
 export function getPasskeySlotInfo() {
   try {
-    const meta = JSON.parse(localStorage.getItem(LS_META) || "null");
+    const meta = JSON.parse(readLocalStorage(LS_META) || "null");
     if (!meta || meta.v !== 2 || !meta.passkey) return null;
     return meta.passkey;
   } catch {
@@ -362,15 +462,15 @@ export function clearPasskeyUnlock() {
 }
 
 export async function unlockWithRecoveryCode(code) {
-  const metaStr = localStorage.getItem(LS_META);
-  const data = localStorage.getItem(LS_KEY);
+  const metaStr = readLocalStorage(LS_META);
+  const data = readLocalStorage(LS_KEY);
   if (!metaStr || !data) return false;
-  const meta = JSON.parse(metaStr);
-  if (!meta || meta.v !== 2 || !meta.recovery) return false;
   const cleaned = String(code || "").replace(/[^A-Z2-7]/gi, "").toUpperCase();
   if (!cleaned) return false;
   try {
-    const iter = Number(meta.iter) || KDF_ITERATIONS_DEFAULT;
+    const meta = JSON.parse(metaStr);
+    if (!meta || meta.v !== 2 || !meta.recovery) return false;
+    const iter = normalizeKdfIterations(meta.iter);
     const salt = fromB64(meta.recovery.saltB64);
     const kek = await deriveKey(cleaned, salt, iter);
     const dekBytes = await unwrapDek(meta.recovery.wrappedDek, kek);
@@ -393,12 +493,12 @@ export async function unlockWithRecoveryCode(code) {
 }
 
 export async function unlockWithPasskey() {
-  const metaStr = localStorage.getItem(LS_META);
-  const data = localStorage.getItem(LS_KEY);
+  const metaStr = readLocalStorage(LS_META);
+  const data = readLocalStorage(LS_KEY);
   if (!metaStr || !data) return { ok: false, msg: "当前没有加密数据。" };
-  const meta = JSON.parse(metaStr);
-  if (!meta || meta.v !== 2 || !meta.passkey) return { ok: false, msg: "当前未启用 Passkey 解锁。" };
   try {
+    const meta = JSON.parse(metaStr);
+    if (!meta || meta.v !== 2 || !meta.passkey) return { ok: false, msg: "当前未启用 Passkey 解锁。" };
     const resolved = await evaluatePasskeyPrf(meta.passkey.credentialId);
     const dekBytes = await unwrapBytesWithPasskeyPrf(
       meta.passkey.wrappedDek,
@@ -429,18 +529,18 @@ export async function unlockWithPasskey() {
 // ---------- sync projects persistence ----------
 export function loadSyncProjects() {
   try {
-    if (localStorage.getItem(LS_META)) {
+    if (readLocalStorage(LS_META)) {
       state.syncProjects = [];
       state.currentProjectId = null;
       return;
     }
-    const parsed = JSON.parse(localStorage.getItem(LS_SYNC_PROJECTS) || "[]");
+    const parsed = JSON.parse(readLocalStorage(LS_SYNC_PROJECTS) || "[]");
     if (isEncryptedPayload(parsed)) {
       state.syncProjects = [];
       state.currentProjectId = null;
       return;
     }
-    applySyncProjectsPayload(parsed, localStorage.getItem(LS_CURRENT_PROJECT) || null);
+    applySyncProjectsPayload(parsed, readLocalStorage(LS_CURRENT_PROJECT));
   } catch {
     state.syncProjects = [];
     state.currentProjectId = null;
@@ -448,7 +548,7 @@ export function loadSyncProjects() {
 }
 
 export function saveSyncProjects() {
-  const hasMaster = !!(state.encMeta || localStorage.getItem(LS_META));
+  const hasMaster = !!(state.encMeta || readLocalStorage(LS_META));
   if (hasMaster && !state.key) {
     return Promise.resolve();
   }
@@ -464,23 +564,31 @@ export function saveSyncProjects() {
     syncProjectsSaveQueue = syncProjectsSaveQueue.catch(() => {}).then(async () => {
       const packed = await encryptJsonPayload(snapshot, key);
       if (generation !== syncProjectsSaveGeneration) return;
-      localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(packed));
-      localStorage.removeItem(LS_CURRENT_PROJECT);
+      try {
+        localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(packed));
+        localStorage.removeItem(LS_CURRENT_PROJECT);
+      } catch (e) {
+        console.error("saveSyncProjects: localStorage write failed", e?.message || e);
+      }
     });
     return syncProjectsSaveQueue;
   }
 
-  localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(snapshot.projects));
-  if (state.currentProjectId) {
-    localStorage.setItem(LS_CURRENT_PROJECT, state.currentProjectId);
-  } else {
-    localStorage.removeItem(LS_CURRENT_PROJECT);
+  try {
+    localStorage.setItem(LS_SYNC_PROJECTS, JSON.stringify(snapshot.projects));
+    if (state.currentProjectId) {
+      localStorage.setItem(LS_CURRENT_PROJECT, state.currentProjectId);
+    } else {
+      localStorage.removeItem(LS_CURRENT_PROJECT);
+    }
+  } catch (e) {
+    console.error("saveSyncProjects: localStorage write failed", e?.message || e);
   }
   return Promise.resolve();
 }
 
 export function lockLocalData() {
-  if (!state.key && !state.encMeta && !localStorage.getItem(LS_META)) return;
+  if (!state.key && !state.encMeta && !readLocalStorage(LS_META)) return;
   state.key = null;
   state.dekRaw = null;
   state.unlocked = false;
@@ -496,13 +604,14 @@ export function getCurrentProject() {
 
 // ---------- global token (renamed concept "Admin Key") ----------
 export function loadGlobalToken() {
-  try { return localStorage.getItem(LS_GLOBAL_TOKEN) || ""; }
-  catch { return ""; }
+  return readLocalStorage(LS_GLOBAL_TOKEN, "");
 }
 
 export function saveGlobalToken(token) {
-  if (token) localStorage.setItem(LS_GLOBAL_TOKEN, token);
-  else localStorage.removeItem(LS_GLOBAL_TOKEN);
+  try {
+    if (token) localStorage.setItem(LS_GLOBAL_TOKEN, token);
+    else localStorage.removeItem(LS_GLOBAL_TOKEN);
+  } catch {}
 }
 
 export function getGlobalToken() {

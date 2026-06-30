@@ -5,20 +5,23 @@ const PASSKEY_WRAP_CONTEXT = new TextEncoder().encode("web-2fa-passkey-wrap-v1")
 const PASSKEY_RP_NAME = "Web 2FA Authenticator";
 
 export function hasPasskeyPrfPrerequisites() {
-  return typeof window !== "undefined"
-    && !!window.isSecureContext
-    && typeof PublicKeyCredential !== "undefined"
-    && !!navigator?.credentials?.create
-    && !!navigator?.credentials?.get;
+  const credentials = getPasskeyCredentials();
+  const cryptoApi = getCryptoApi();
+  return isPasskeySecureContext()
+    && !!getPublicKeyCredentialCtor()
+    && typeof credentials?.create === "function"
+    && typeof credentials?.get === "function"
+    && typeof cryptoApi?.getRandomValues === "function";
 }
 
 export async function getPasskeyPrfSupport() {
   if (!hasPasskeyPrfPrerequisites()) {
     return { supported: false, reason: "需要 HTTPS 安全上下文和系统 Passkey 支持。" };
   }
-  if (typeof PublicKeyCredential.getClientCapabilities === "function") {
+  const getClientCapabilities = getPasskeyClientCapabilitiesFn();
+  if (getClientCapabilities) {
     try {
-      const capabilities = await PublicKeyCredential.getClientCapabilities();
+      const capabilities = await getClientCapabilities();
       if (capabilities?.["extension:prf"] === false) {
         return { supported: false, reason: "当前浏览器或认证器不支持 WebAuthn PRF 扩展。" };
       }
@@ -35,14 +38,19 @@ export async function getPasskeyPrfSupport() {
 export async function createLocalUnlockPasskey({ label = "" } = {}) {
   const support = await getPasskeyPrfSupport();
   if (!support.supported) throw new Error(support.reason || "当前环境不支持 Passkey。");
+  const credentials = getPasskeyCredentials();
+  const cryptoApi = getCryptoApi();
+  if (typeof credentials?.create !== "function" || typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("需要 HTTPS 安全上下文和系统 Passkey 支持。");
+  }
 
-  const cred = await navigator.credentials.create({
+  const cred = await credentials.create({
     publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rp: { id: currentRpId(), name: PASSKEY_RP_NAME },
+      challenge: cryptoApi.getRandomValues(new Uint8Array(32)),
+      rp: currentRp(),
       user: {
-        id: crypto.getRandomValues(new Uint8Array(16)),
-        name: `local-unlock@${currentRpId()}`,
+        id: cryptoApi.getRandomValues(new Uint8Array(16)),
+        name: currentUserName(),
         displayName: label || "Web 2FA 本地快捷解锁",
       },
       pubKeyCredParams: [
@@ -84,23 +92,30 @@ export async function createLocalUnlockPasskey({ label = "" } = {}) {
 }
 
 export async function evaluatePasskeyPrf(credentialId) {
+  const credentials = getPasskeyCredentials();
+  const cryptoApi = getCryptoApi();
+  if (typeof credentials?.get !== "function" || typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("需要 HTTPS 安全上下文和系统 Passkey 支持。");
+  }
   const idBytes = typeof credentialId === "string" ? fromB64url(credentialId) : new Uint8Array(credentialId);
   const idKey = typeof credentialId === "string" ? credentialId : b64url(idBytes);
-  const cred = await navigator.credentials.get({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rpId: currentRpId(),
-      allowCredentials: [{ type: "public-key", id: idBytes }],
-      userVerification: "required",
-      timeout: 60_000,
-      extensions: {
-        prf: {
-          evalByCredential: {
-            [idKey]: { first: PASSKEY_PRF_CONTEXT }
-          }
+  const publicKey = {
+    challenge: cryptoApi.getRandomValues(new Uint8Array(32)),
+    allowCredentials: [{ type: "public-key", id: idBytes }],
+    userVerification: "required",
+    timeout: 60_000,
+    extensions: {
+      prf: {
+        evalByCredential: {
+          [idKey]: { first: PASSKEY_PRF_CONTEXT }
         }
       }
     }
+  };
+  const rpId = currentRpId();
+  if (rpId) publicKey.rpId = rpId;
+  const cred = await credentials.get({
+    publicKey
   });
   if (!cred) throw new Error("Passkey 验证失败。");
   const prfOutput = readPrfFirst(cred);
@@ -143,8 +158,64 @@ function readPrfFirst(credential) {
   }
 }
 
+function isPasskeySecureContext() {
+  try {
+    return !!globalThis.window?.isSecureContext;
+  } catch {
+    return false;
+  }
+}
+
+function getPublicKeyCredentialCtor() {
+  try {
+    return globalThis.PublicKeyCredential;
+  } catch {
+    return null;
+  }
+}
+
+function getPasskeyClientCapabilitiesFn() {
+  try {
+    const ctor = getPublicKeyCredentialCtor();
+    const fn = ctor?.getClientCapabilities;
+    return typeof fn === "function" ? () => fn.call(ctor) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPasskeyCredentials() {
+  try {
+    return globalThis.navigator?.credentials || null;
+  } catch {
+    return null;
+  }
+}
+
+function getCryptoApi() {
+  try {
+    return globalThis.crypto || null;
+  } catch {
+    return null;
+  }
+}
+
 function currentRpId() {
-  return location.hostname;
+  try {
+    return String(globalThis.location?.hostname || globalThis.window?.location?.hostname || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function currentRp() {
+  const id = currentRpId();
+  return id ? { id, name: PASSKEY_RP_NAME } : { name: PASSKEY_RP_NAME };
+}
+
+function currentUserName() {
+  const id = currentRpId();
+  return id ? `local-unlock@${id}` : "local-unlock";
 }
 
 function toUint8Array(value) {

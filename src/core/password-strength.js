@@ -47,27 +47,59 @@ export function scorePassword(pw) {
 // ----- 5.5 失败退避 -----
 const SS_FAIL_COUNT = "authenticator.v1.unlockFails";
 const SS_FAIL_UNTIL = "authenticator.v1.unlockBlockUntil";
+const MAX_FAIL_COUNT = 1_000_000;
 
 export function getUnlockBlockMs() {
-  const until = Number(sessionStorage.getItem(SS_FAIL_UNTIL) || 0);
+  const until = normalizeSessionTimestamp(readSessionStorage(SS_FAIL_UNTIL));
   const left = until - Date.now();
   return left > 0 ? left : 0;
 }
 
 export function recordUnlockFail() {
-  const n = Number(sessionStorage.getItem(SS_FAIL_COUNT) || 0) + 1;
-  sessionStorage.setItem(SS_FAIL_COUNT, String(n));
+  const n = Math.min(MAX_FAIL_COUNT, normalizeFailCount(readSessionStorage(SS_FAIL_COUNT)) + 1);
+  if (!writeSessionStorage(SS_FAIL_COUNT, String(n))) return 0;
   // 指数退避：第 3 次起开始限速
   if (n >= 3) {
     const delaySec = Math.min(60, 2 ** Math.min(6, n - 2)); // 2,4,8,16,32,60,60...
     const until = Date.now() + delaySec * 1000;
-    sessionStorage.setItem(SS_FAIL_UNTIL, String(until));
+    writeSessionStorage(SS_FAIL_UNTIL, String(until));
     return delaySec;
   }
   return 0;
 }
 
 export function clearUnlockFails() {
-  sessionStorage.removeItem(SS_FAIL_COUNT);
-  sessionStorage.removeItem(SS_FAIL_UNTIL);
+  removeSessionStorage(SS_FAIL_COUNT);
+  removeSessionStorage(SS_FAIL_UNTIL);
+}
+
+export function normalizeFailCount(value) {
+  const count = Math.trunc(Number(value));
+  if (!Number.isFinite(count) || count < 0) return 0;
+  return Math.min(MAX_FAIL_COUNT, count);
+}
+
+export function normalizeSessionTimestamp(value) {
+  const ts = Math.trunc(Number(value));
+  if (!Number.isFinite(ts) || ts <= 0 || ts > Number.MAX_SAFE_INTEGER) return 0;
+  return ts;
+}
+
+function readSessionStorage(key) {
+  try { return globalThis.sessionStorage?.getItem(key) ?? null; }
+  catch { return null; }
+}
+
+function writeSessionStorage(key, value) {
+  try {
+    globalThis.sessionStorage?.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeSessionStorage(key) {
+  try { globalThis.sessionStorage?.removeItem(key); }
+  catch {}
 }

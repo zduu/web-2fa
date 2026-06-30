@@ -1,4 +1,5 @@
 import { ensureItemDefaults } from "./storage.js";
+import { normalizeOtpSecret } from "./totp.js";
 
 export function normalizeImportedItem(raw) {
   return ensureItemDefaults({
@@ -7,28 +8,37 @@ export function normalizeImportedItem(raw) {
     account: String(raw?.account || "").trim(),
     password: typeof raw?.password === "string" ? raw.password : "",
     note: typeof raw?.note === "string" ? raw.note : "",
-    pinned: !!raw?.pinned,
+    pinned: normalizeImportedPinned(raw?.pinned),
     secret: raw?.secret || "",
     algorithm: raw?.algorithm || "SHA1",
-    digits: Number(raw?.digits || 6),
-    period: Number(raw?.period || 30),
-    counter: Number(raw?.counter || 0),
+    digits: raw?.digits ?? 6,
+    period: raw?.period ?? 30,
+    counter: raw?.counter ?? 0,
     deleted: false,
     updatedAt: Date.now(),
   });
+}
+
+export function normalizeImportedPinned(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "y";
+  }
+  return false;
 }
 
 export function importFingerprint(item) {
   const normalized = ensureItemDefaults(item);
   return [
     normalized.type || "totp",
-    String(normalized.secret || "").replace(/\s+/g, "").toUpperCase(),
+    normalizeOtpSecret(normalized.secret),
     String(normalized.issuer || "").trim(),
     String(normalized.account || "").trim(),
     String(normalized.algorithm || "SHA1").toUpperCase(),
-    Number(normalized.digits || 6),
+    normalized.digits,
     normalized.type === "hotp"
-      ? `counter:${Number(normalized.counter || 0)}`
-      : `period:${Number(normalized.period || 30)}`,
+      ? `counter:${normalized.counter}`
+      : `period:${normalized.period}`,
   ].join("|");
 }

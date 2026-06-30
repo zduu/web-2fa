@@ -1,5 +1,5 @@
 import { normalizeImportedItem } from "./imports.js";
-import { parseOtpAuth } from "./totp.js";
+import { isOtpAuthUri, parseOtpAuth } from "./totp.js";
 
 const BOM = /^\uFEFF/;
 const ANDOTP_HEADER_BYTES = 28;
@@ -50,29 +50,29 @@ export function parseAegisJson(input) {
   let skippedInvalid = 0;
 
   for (const entry of entries) {
-    const type = String(entry?.type || "totp").toLowerCase();
-    if (type !== "totp" && type !== "hotp") {
-      skippedTypes.add(type || "unknown");
+    const type = normalizeMigrationOtpType(entry?.type, "totp");
+    if (!type) {
+      skippedTypes.add(formatSkippedType(entry?.type));
       continue;
     }
     const info = entry?.info || {};
-    const secret = String(info.secret || "").trim();
-    if (!secret) {
-      skippedInvalid++;
-      continue;
-    }
-    items.push(normalizeImportedItem({
+    const item = buildMigrationItem({
       type,
       issuer: entry?.issuer || "",
       account: entry?.name || "",
       note: entry?.note || "",
-      pinned: !!entry?.favorite,
-      secret,
-      algorithm: info.algo || "SHA1",
-      digits: info.digits || 6,
-      period: type === "totp" ? (info.period || 30) : 30,
-      counter: type === "hotp" ? (info.counter || 0) : 0,
-    }));
+      pinned: normalizeMigrationFavorite(entry?.favorite),
+      secret: info.secret,
+      algorithm: info.algo,
+      digits: info.digits,
+      period: info.period,
+      counter: info.counter,
+    });
+    if (!item) {
+      skippedInvalid++;
+      continue;
+    }
+    items.push(item);
   }
 
   return makeItemsResult("Aegis JSON", entries.length, items, skippedTypes, skippedInvalid);
@@ -95,7 +95,7 @@ export function parseBitwardenCsv(text) {
     if (!rawTotp) { skippedInvalid++; continue; }
     const parsed = parseBitwardenOtpField(rawTotp);
     if (!parsed) { skippedInvalid++; continue; }
-    items.push(normalizeImportedItem({
+    const item = buildMigrationItem({
       type: parsed.type || "totp",
       issuer: parsed.issuer || readCsvValue(row, headerMap, ["name"]) || "",
       account: parsed.account || readCsvValue(row, headerMap, ["login_username", "username"]) || "",
@@ -103,11 +103,13 @@ export function parseBitwardenCsv(text) {
       note: readCsvValue(row, headerMap, ["notes"]) || "",
       pinned: readCsvValue(row, headerMap, ["favorite"]) === "1",
       secret: parsed.secret,
-      algorithm: parsed.algorithm || "SHA1",
-      digits: parsed.digits || 6,
-      period: parsed.period || 30,
-      counter: parsed.counter || 0,
-    }));
+      algorithm: parsed.algorithm,
+      digits: parsed.digits,
+      period: parsed.period,
+      counter: parsed.counter,
+    });
+    if (!item) { skippedInvalid++; continue; }
+    items.push(item);
   }
 
   return {
@@ -141,19 +143,21 @@ export function parseBitwardenJson(input) {
     if (!rawTotp) { skippedInvalid++; continue; }
     const parsed = parseBitwardenOtpField(rawTotp);
     if (!parsed) { skippedInvalid++; continue; }
-    items.push(normalizeImportedItem({
+    const item = buildMigrationItem({
       type: parsed.type || "totp",
       issuer: parsed.issuer || entry?.name || "",
       account: parsed.account || entry?.login?.username || "",
       password: entry?.login?.password || "",
       note: entry?.notes || "",
-      pinned: !!entry?.favorite,
+      pinned: normalizeMigrationFavorite(entry?.favorite),
       secret: parsed.secret,
-      algorithm: parsed.algorithm || "SHA1",
-      digits: parsed.digits || 6,
-      period: parsed.period || 30,
-      counter: parsed.counter || 0,
-    }));
+      algorithm: parsed.algorithm,
+      digits: parsed.digits,
+      period: parsed.period,
+      counter: parsed.counter,
+    });
+    if (!item) { skippedInvalid++; continue; }
+    items.push(item);
   }
 
   return {
@@ -178,34 +182,34 @@ export function parseAndOtpJson(input) {
   let skippedInvalid = 0;
 
   for (const entry of arr) {
-    const type = String(entry?.type || "TOTP").toLowerCase();
-    if (type !== "totp" && type !== "hotp") {
-      skippedTypes.add(type || "unknown");
+    const type = normalizeMigrationOtpType(entry?.type, "totp");
+    if (!type) {
+      skippedTypes.add(formatSkippedType(entry?.type));
       continue;
     }
-    const secret = String(entry?.secret || "").trim();
-    if (!secret) {
-      skippedInvalid++;
-      continue;
-    }
-    items.push(normalizeImportedItem({
+    const item = buildMigrationItem({
       type,
       issuer: entry?.issuer || "",
       account: entry?.label || "",
-      secret,
-      algorithm: entry?.algorithm || "SHA1",
-      digits: entry?.digits || 6,
-      period: type === "totp" ? (entry?.period || 30) : 30,
-      counter: type === "hotp" ? (entry?.counter || 0) : 0,
-    }));
+      secret: entry?.secret,
+      algorithm: entry?.algorithm,
+      digits: entry?.digits,
+      period: entry?.period,
+      counter: entry?.counter,
+    });
+    if (!item) {
+      skippedInvalid++;
+      continue;
+    }
+    items.push(item);
   }
 
   return makeItemsResult("andOTP JSON", arr.length, items, skippedTypes, skippedInvalid);
 }
 
 export async function decryptAndParseAndOtpBackup(input, password) {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (!isLikelyAndOtpEncryptedBackup(bytes, "")) {
+  const bytes = toByteView(input);
+  if (!bytes || !isLikelyAndOtpEncryptedBackup(bytes, "")) {
     throw new Error("文件看起来不是 andOTP 加密备份。");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -242,7 +246,7 @@ export async function decryptAndParseAndOtpBackup(input, password) {
 }
 
 export function isLikelyAndOtpEncryptedBackup(input, fileName = "") {
-  const bytes = input instanceof Uint8Array ? input : (input ? new Uint8Array(input) : null);
+  const bytes = toByteView(input);
   if (!bytes || bytes.byteLength <= ANDOTP_HEADER_BYTES) return false;
   const iterations = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(0, false);
   if (!Number.isFinite(iterations) || iterations < 1000 || iterations > 10_000_000) return false;
@@ -284,10 +288,44 @@ function buildWarnings(skippedTypes, skippedInvalid, importedCount, emptyFallbac
   return warnings;
 }
 
+function toByteView(input) {
+  if (!input) return null;
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (ArrayBuffer.isView(input)) {
+    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  }
+  return new Uint8Array(input);
+}
+
+function normalizeMigrationOtpType(value, fallback = "totp") {
+  const type = String(value || fallback).trim().toLowerCase();
+  if (type === "totp" || type === "hotp") return type;
+  return null;
+}
+
+function formatSkippedType(value) {
+  return String(value || "").trim().toLowerCase() || "unknown";
+}
+
+function normalizeMigrationFavorite(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "y";
+  }
+  return false;
+}
+
+function buildMigrationItem(raw) {
+  const item = normalizeImportedItem(raw);
+  return item.secret ? item : null;
+}
+
 function parseBitwardenOtpField(rawValue) {
   const value = String(rawValue || "").trim();
   if (!value) return null;
-  if (value.startsWith("otpauth://")) {
+  if (isOtpAuthUri(value)) {
     const parsed = parseOtpAuth(value);
     if (!parsed) return null;
     return {

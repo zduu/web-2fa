@@ -1,7 +1,10 @@
 function readRuntimeConfig() {
-  if (typeof window === "undefined") return {};
-  const cfg = window.__APP_RUNTIME__;
-  return cfg && typeof cfg === "object" ? cfg : {};
+  try {
+    const cfg = globalThis.window?.__APP_RUNTIME__;
+    return cfg && typeof cfg === "object" ? cfg : {};
+  } catch {
+    return {};
+  }
 }
 
 const LS_API_BASE_URL = "authenticator.v1.cloudApiBaseUrl";
@@ -20,7 +23,7 @@ function readLocalOverride(key) {
 }
 
 export function getAppMode() {
-  const mode = readRuntimeConfig().mode;
+  const mode = String(readRuntimeConfig().mode || "").trim().toLowerCase();
   if (mode === "local-app" || mode === "android-app") return mode;
   return "web";
 }
@@ -59,9 +62,7 @@ export function getPublicBaseUrl() {
 export function getCloudBaseUrls() {
   const cfg = readRuntimeConfig();
   const apiBaseUrl = getApiBaseUrl();
-  const publicBaseUrl = isAndroidApp()
-    ? (readLocalOverride(LS_PUBLIC_BASE_URL) || trimTrailingSlash(cfg.publicBaseUrl))
-    : getPublicBaseUrl();
+  const publicBaseUrl = getPublicBaseUrl();
   return {
     apiBaseUrl,
     publicBaseUrl,
@@ -73,7 +74,9 @@ export function getCloudBaseUrls() {
 export function setCloudBaseUrls({ apiBaseUrl = "", publicBaseUrl = "" } = {}) {
   if (!isAndroidApp()) throw new Error("仅同步版 APK 支持在应用内设置云端地址");
   const api = normalizeHttpUrl(apiBaseUrl, "云端 API 地址");
-  const pub = publicBaseUrl ? normalizeHttpUrl(publicBaseUrl, "公开站点地址") : api;
+  const publicInput = trimTrailingSlash(publicBaseUrl);
+  if (!api && publicInput) throw new Error("请先填写云端 API 地址");
+  const pub = publicInput ? normalizeHttpUrl(publicInput, "公开站点地址") : api;
   try {
     if (api) localStorage.setItem(LS_API_BASE_URL, api);
     else localStorage.removeItem(LS_API_BASE_URL);

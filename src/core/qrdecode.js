@@ -71,12 +71,27 @@ export async function decodeQrFromFile(file) {
     }
   }
   // 退回：用 <img> 加载
-  const url = URL.createObjectURL(file);
+  if (
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function" ||
+    typeof URL.revokeObjectURL !== "function" ||
+    typeof Image !== "function"
+  ) {
+    return null;
+  }
+  let url;
+  try {
+    url = URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
   try {
     const img = await loadHtmlImage(url);
     return await decodeQrFromSource(img);
+  } catch {
+    return null;
   } finally {
-    URL.revokeObjectURL(url);
+    try { URL.revokeObjectURL(url); } catch {}
   }
 }
 
@@ -102,12 +117,21 @@ async function sourceToImageData(source) {
     drawW = Math.max(1, Math.floor(width * scale));
     drawH = Math.max(1, Math.floor(height * scale));
   }
-  const canvas = (typeof OffscreenCanvas === "function")
-    ? new OffscreenCanvas(drawW, drawH)
-    : Object.assign(document.createElement("canvas"), { width: drawW, height: drawH });
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return { width: 0, height: 0, data: null };
-  ctx.drawImage(source, 0, 0, drawW, drawH);
-  const imgData = ctx.getImageData(0, 0, drawW, drawH);
-  return { width: drawW, height: drawH, data: imgData.data };
+  let canvas = null;
+  if (typeof OffscreenCanvas === "function") {
+    canvas = new OffscreenCanvas(drawW, drawH);
+  } else if (typeof document !== "undefined" && typeof document.createElement === "function") {
+    canvas = Object.assign(document.createElement("canvas"), { width: drawW, height: drawH });
+  }
+  if (!canvas) return { width: 0, height: 0, data: null };
+
+  try {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return { width: 0, height: 0, data: null };
+    ctx.drawImage(source, 0, 0, drawW, drawH);
+    const imgData = ctx.getImageData(0, 0, drawW, drawH);
+    return { width: drawW, height: drawH, data: imgData.data };
+  } catch {
+    return { width: 0, height: 0, data: null };
+  }
 }
