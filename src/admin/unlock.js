@@ -23,14 +23,21 @@ export async function verifyAdminKey(adminKey) {
     if (res.status === 401) return { ok: false, msg: "Admin Key 不正确" };
     if (res.status === 200) {
       const data = await res.json().catch(() => ({}));
-      if (data && data.success === false && data.error?.includes("not configured")) {
+      if (data?.success === false && isAdminKeyMissingResponse(res, data)) {
         // server didn't configure ADMIN_KEY/KV_ADMIN_KEY; fall back to share/list probe
         return await probeShareList(adminKey);
       }
+      if (data?.success === false) return { ok: false, msg: data.error || "Admin Key 验证失败" };
       return { ok: true };
     }
   } catch {}
   return await probeShareList(adminKey);
+}
+
+function isAdminKeyMissingResponse(response, data) {
+  if (response?.headers?.get?.("X-Note") === "admin_key_missing") return true;
+  const error = typeof data?.error === "string" ? data.error.toLowerCase() : "";
+  return error.includes("admin key") && error.includes("configured");
 }
 
 async function probeShareList(adminKey) {
@@ -39,9 +46,11 @@ async function probeShareList(adminKey) {
       headers: { "X-Token": adminKey }
     });
     if (res.status === 401) return { ok: false, msg: "Admin Key 不正确" };
+    const note = res.headers?.get?.("X-Note") || "";
+    if (note === "kv-missing") return { ok: false, msg: "服务端未绑定 AUTH_KV" };
+    if (note) return { ok: false, msg: "Admin Key 验证失败" };
     if (res.ok) return { ok: true };
-    // 200 with empty list also acceptable (no shares yet)
-    return { ok: true };
+    return { ok: false, msg: `HTTP ${res.status}` };
   } catch (e) {
     return { ok: false, msg: "网络错误" };
   }

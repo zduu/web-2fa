@@ -1,6 +1,6 @@
 // 项目管理：CRUD、切换、汇总视图
 
-import { state, saveSyncProjects, getCurrentProject, persist } from "../core/storage.js";
+import { state, saveSyncProjects, getCurrentProject, persist, normalizeSyncProject } from "../core/storage.js";
 
 export function listProjects() {
   return state.syncProjects.slice();
@@ -18,7 +18,7 @@ export function detectDuplicateSyncIds() {
 
 export function createProject({ name, syncId, secret, auto = false, autoInterval = 60000 }) {
   const projectId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  const newProj = {
+  const newProj = normalizeSyncProject({
     id: projectId,
     name,
     syncId: syncId || `local-${projectId}`,
@@ -28,7 +28,7 @@ export function createProject({ name, syncId, secret, auto = false, autoInterval
     lastSyncedAt: 0,
     itemsData: [],
     itemOrder: [],
-  };
+  });
   state.syncProjects.push(newProj);
   saveSyncProjects();
   return newProj;
@@ -37,7 +37,7 @@ export function createProject({ name, syncId, secret, auto = false, autoInterval
 export function updateProject(id, patch) {
   const p = state.syncProjects.find(x => x.id === id);
   if (!p) return null;
-  Object.assign(p, patch);
+  Object.assign(p, normalizeSyncProject({ ...p, ...patch }));
   saveSyncProjects();
   return p;
 }
@@ -72,7 +72,7 @@ export async function switchToProject(projectId) {
     state.syncProjects.forEach(p => {
       if (p && p.itemsData) {
         for (const it of p.itemsData) {
-          state.items.push({ ...it, _projectId: p.id, _projectName: p.name || "未命名" });
+          state.items.push({ ...it, _projectId: p.id, _projectName: projectDisplayName(p.name) });
         }
       }
     });
@@ -109,8 +109,18 @@ export function normalizeProjectItemOrder(itemOrder, items) {
 
   const missing = activeItems
     .filter((it) => !seen.has(it.id))
-    .sort((a, b) => `${a.issuer || ""}::${a.account || ""}`.localeCompare(`${b.issuer || ""}::${b.account || ""}`))
+    .sort((a, b) => projectItemSortKey(a).localeCompare(projectItemSortKey(b)))
     .map((it) => it.id);
 
   return next.concat(missing);
+}
+
+function projectItemSortKey(item) {
+  const issuer = String(item?.issuer || "").trim();
+  const account = String(item?.account || "").trim();
+  return `${issuer}::${account}`;
+}
+
+function projectDisplayName(value) {
+  return String(value || "").trim() || "未命名";
 }

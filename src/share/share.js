@@ -1,25 +1,38 @@
 // 分享：生成 / 撤销 / 列表 / 重新分享 / 绑定密钥
 // 临时分享：随机 AES-GCM 密钥 + 随机 SID。密钥放 URL fragment (#k=...)。
 
-import { state, getCurrentProject, getGlobalToken, saveSyncProjects, persist } from "../core/storage.js";
+import {
+  state,
+  getCurrentProject,
+  getGlobalToken,
+  saveSyncProjects,
+  persist,
+  mergeShareRefs,
+  normalizeShareRefs,
+} from "../core/storage.js";
 import { b64url } from "../core/crypto.js";
 import { wrapShareKeyWithPassword } from "../core/share-password.js";
 import { pushProject } from "../sync/sync.js";
 import { apiUrl, getPublicBaseUrl } from "../core/runtime.js";
+import { normalizeOtpPayload } from "../core/totp.js";
 
 export async function createShareLink(item, ttlSeconds = null, meta = {}) {
-  if ((item.type || "totp") !== "totp") throw new Error("仅支持分享 TOTP");
+  const otpPayload = normalizeOtpPayload(item);
+  if (otpPayload.type !== "totp") throw new Error("仅支持分享 TOTP");
 
   const note = typeof meta.note === "string" ? meta.note.slice(0, 280) : "";
-  const maxAccess = Number(meta.maxAccess) > 0 ? Math.floor(Number(meta.maxAccess)) : 0;
+  const maxAccess = normalizeNonNegativeInteger(meta.maxAccess, { max: 1_000_000 });
   const password = typeof meta.password === "string" ? meta.password.trim() : "";
+  const label = formatShareLabel(item);
+  const issuer = normalizeShareText(item?.issuer);
+  const account = normalizeShareText(item?.account);
   const payloadObj = {
     type: "totp",
-    secret: (item.secret || "").replace(/\s+/g, "").toUpperCase(),
-    algorithm: (item.algorithm || "SHA1").toUpperCase(),
-    digits: Number(item.digits || 6),
-    period: Number(item.period || 30),
-    label: `${item.issuer || ""}${item.account ? (" · " + item.account) : ""}`.trim(),
+    secret: otpPayload.secret,
+    algorithm: otpPayload.algorithm,
+    digits: otpPayload.digits,
+    period: otpPayload.period,
+    label,
     note,
   };
   const pt = new TextEncoder().encode(JSON.stringify(payloadObj));
@@ -45,7 +58,10 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
 
   const qsParts = [];
   if (ttlSeconds === "perm" || ttlSeconds === 0) qsParts.push("ttl=perm");
-  else if (Number.isFinite(Number(ttlSeconds)) && Number(ttlSeconds) > 0) qsParts.push(`ttl=${Math.round(Number(ttlSeconds))}`);
+  else {
+    const ttl = normalizePositiveInteger(ttlSeconds);
+    if (ttl !== null) qsParts.push(`ttl=${ttl}`);
+  }
   if (maxAccess > 0) qsParts.push(`max=${maxAccess}`);
   const qs = qsParts.length ? "?" + qsParts.join("&") : "";
 
@@ -54,23 +70,25 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   if (token) headers["X-Token"] = token;
 
   const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
+  throwForCloudShareNote(res, "创建分享失败");
   if (!res.ok) { const e = new Error(`server-${res.status}`); e.status = res.status; throw e; }
 
   // Admin convenience: store share recovery material by default so any
   // ADMIN_KEY-authenticated device can copy the full link later.
+  let recoveryStored = false;
   try {
     if (token && meta.storeKey !== false) {
-      const createdAt = Number(meta.createdAt || Date.now());
-      await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}${qs}`), {
+      const createdAt = normalizeOptionalTimestamp(meta.createdAt) || Date.now();
+      const keyRes = await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}${qs}`), {
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Token": token },
         body: JSON.stringify({
           k: password ? "" : b64url(keyRaw),
-          label: meta.label || payloadObj.label || "(未命名)",
-          projectName: meta.projectName || "",
-          itemId: meta.itemId || item.id || "",
-          issuer: item.issuer || "",
-          account: item.account || "",
+          label: normalizeShareText(meta.label) || payloadObj.label || "(未命名)",
+          projectName: normalizeShareText(meta.projectName),
+          itemId: normalizeShareText(meta.itemId || item.id),
+          issuer,
+          account,
           createdAt,
           ttl: ttlSeconds === null ? "default" : ttlSeconds,
           maxAccess,
@@ -78,11 +96,12 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
           protectedBundle: protectedBundle || null,
         })
       });
+      recoveryStored = keyRes.ok && !keyRes.headers?.get?.("X-Note");
     }
   } catch {}
 
   const link = `${getPublicBaseUrl()}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
-  return { link, sid, k: b64url(keyRaw), requiresPassword: !!password };
+  return { link, sid, k: b64url(keyRaw), requiresPassword: !!password, recoveryStored };
 }
 
 // Share an item that is currently visible (handles both single-project and "_all_" view)
@@ -96,7 +115,7 @@ export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, pass
     : (getCurrentProject()?.name || "");
   const createdAt = Date.now();
   const result = await createShareLink(item, ttlSeconds, {
-    label: `${item.issuer || ""}${item.account ? (" · " + item.account) : ""}`.trim() || "(未命名)",
+    label: formatShareLabel(item) || "(未命名)",
     projectName,
     itemId: item.id,
     createdAt,
@@ -107,10 +126,7 @@ export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, pass
   });
   // Write share record back to source
   if (target) {
-    if (!Array.isArray(target.shares)) target.shares = [];
-    if (!target.shares.some(x => (typeof x === "string" ? x === result.sid : x.sid === result.sid))) {
-      target.shares.push({ sid: result.sid, k: result.k });
-    }
+    target.shares = mergeShareRefs(target.shares, [{ sid: result.sid, k: result.k }]);
     target.updatedAt = createdAt;
   }
   if (isAll) {
@@ -125,6 +141,21 @@ export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, pass
   return result;
 }
 
+export function sharePayloadChanged(prev, next) {
+  const prevPayload = normalizeOtpPayload(prev);
+  const nextPayload = normalizeOtpPayload(next);
+  return (
+    prevPayload.type !== nextPayload.type ||
+    prevPayload.secret !== nextPayload.secret ||
+    String(prev?.issuer || "").trim() !== String(next?.issuer || "").trim() ||
+    String(prev?.account || "").trim() !== String(next?.account || "").trim() ||
+    prevPayload.algorithm !== nextPayload.algorithm ||
+    prevPayload.digits !== nextPayload.digits ||
+    prevPayload.period !== nextPayload.period ||
+    prevPayload.counter !== nextPayload.counter
+  );
+}
+
 function findItemInProject(projId, itemId) {
   const proj = state.syncProjects.find(p => p.id === projId);
   if (!proj || !Array.isArray(proj.itemsData)) return null;
@@ -132,17 +163,16 @@ function findItemInProject(projId, itemId) {
 }
 
 export async function revokeShare(sid) {
-  const token = getGlobalToken();
-  const headers = token ? { "X-Token": token } : {};
-  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "DELETE", headers });
-  // best effort delete sharekey
-  try { await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}`), { method: "DELETE", headers }); } catch {}
+  const normalizedSid = String(sid || "").trim();
+  if (!normalizedSid) return false;
+  await deleteRemoteShareResources(normalizedSid);
   // also clear local references
   const removeFromList = (arr) => {
     if (!Array.isArray(arr)) return false;
-    const before = arr.length;
-    const filtered = arr.filter(x => (typeof x === "string" ? x !== sid : x?.sid !== sid));
-    if (filtered.length !== before) { arr.length = 0; arr.push(...filtered); return true; }
+    const before = JSON.stringify(normalizeShareRefs(arr));
+    const filtered = normalizeShareRefs(arr).filter((share) => share.sid !== normalizedSid);
+    const after = JSON.stringify(filtered);
+    if (after !== before) { arr.length = 0; arr.push(...filtered); return true; }
     return false;
   };
   let changed = false;
@@ -152,14 +182,35 @@ export async function revokeShare(sid) {
     for (const it of proj.itemsData) if (removeFromList(it.shares)) changed = true;
   }
   if (changed) { await persist(); saveSyncProjects(); }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
+}
+
+export async function deleteRemoteShareResources(sid, token = getGlobalToken()) {
+  const normalizedSid = normalizeShareText(sid);
+  if (!normalizedSid) return false;
+  const headers = token ? { "X-Token": token } : {};
+  let shareError = null;
+  try {
+    const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(normalizedSid)}`), { method: "DELETE", headers });
+    throwForCloudShareNote(res, "删除分享失败");
+    if (!res.ok) shareError = new Error(`HTTP ${res.status}`);
+  } catch (error) {
+    shareError = error;
+  }
+  try {
+    await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(normalizedSid)}`), { method: "DELETE", headers });
+  } catch {}
+  if (shareError) throw shareError;
+  return true;
 }
 
 // HEAD probe for share existence
 export async function probeShare(sid) {
+  const normalizedSid = normalizeShareText(sid);
+  if (!normalizedSid) return false;
   try {
-    const r = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`), { method: "HEAD" });
-    return r.status === 200;
+    const r = await fetch(apiUrl(`/api/share/${encodeURIComponent(normalizedSid)}`), { method: "HEAD" });
+    return r.status === 200 && !r.headers?.get?.("X-Note");
   } catch { return false; }
 }
 
@@ -168,14 +219,12 @@ export function collectLocalShares() {
   const out = [];
   const push = (it, projName) => {
     if (!Array.isArray(it.shares) || !it.shares.length) return;
-    for (const s of it.shares) {
-      const sid = typeof s === "string" ? s : s?.sid;
-      const k = typeof s === "string" ? null : s?.k;
-      if (!sid) continue;
+    for (const s of normalizeShareRefs(it.shares)) {
+      const { sid, k = null } = s;
       out.push({
         sid, k,
         itemId: it.id,
-        label: `${it.issuer || ""}${it.account ? (" · " + it.account) : ""}`.trim() || "(未命名)",
+        label: formatShareLabel(it) || "(未命名)",
         projectName: projName,
       });
     }
@@ -183,73 +232,106 @@ export function collectLocalShares() {
   for (const it of state.items) push(it, null);
   for (const proj of state.syncProjects) {
     if (!Array.isArray(proj.itemsData)) continue;
-    for (const it of proj.itemsData) push(it, proj.name || "未命名");
+    for (const it of proj.itemsData) push(it, normalizeShareText(proj.name) || "未命名");
   }
-  // dedup by sid
-  const seen = new Set();
-  return out.filter(r => seen.has(r.sid) ? false : seen.add(r.sid));
+  const bySid = new Map();
+  for (const record of out) {
+    if (!bySid.has(record.sid)) {
+      bySid.set(record.sid, record);
+      continue;
+    }
+    const prev = bySid.get(record.sid);
+    if (!prev.k && record.k) prev.k = record.k;
+  }
+  return Array.from(bySid.values());
+}
+
+export function formatShareLabel(item) {
+  const issuer = normalizeShareText(item?.issuer);
+  const account = normalizeShareText(item?.account);
+  if (issuer && account) return `${issuer} · ${account}`;
+  return issuer || account || "";
+}
+
+export function formatShareResultStatus(label, copied, recoveryStored = true) {
+  const name = normalizeShareText(label) || "分享";
+  const action = copied ? "已复制" : "已生成";
+  if (recoveryStored === false) {
+    return `“${name}” 的分享链接${action}，但后台恢复材料未保存`;
+  }
+  return copied
+    ? `“${name}” 的分享链接已复制，可直接扫码打开`
+    : `“${name}” 的分享链接已生成，可扫码或手动复制`;
+}
+
+function normalizeShareText(value) {
+  return String(value || "").trim();
 }
 
 export async function fetchCloudShares() {
   const token = getGlobalToken();
   if (!token) throw new Error("需要 Admin Key");
   const res = await fetch(apiUrl("/api/share/list"), { headers: { "X-Token": token, "Cache-Control": "no-store" } });
+  throwForCloudShareNote(res, "加载分享列表失败");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json().catch(() => ({ sids: [] }));
-  return Array.isArray(data.sids) ? data.sids : [];
+  return normalizeShareIds(data.sids);
 }
 
 export async function fetchCloudShareStats(sids = []) {
   const token = getGlobalToken();
   if (!token) throw new Error("需要 Admin Key");
+  const ids = normalizeShareIds(sids);
+  if (!ids.length) return new Map();
   const params = new URLSearchParams();
-  for (const sid of sids) {
-    if (sid) params.append("sid", sid);
-  }
+  for (const sid of ids) params.append("sid", sid);
   const qs = params.toString();
   const res = await fetch(apiUrl(`/api/share/stat${qs ? `?${qs}` : ""}`), {
     headers: { "X-Token": token, "Cache-Control": "no-store" }
   });
+  throwForCloudShareNote(res, "加载分享统计失败");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json().catch(() => ({ items: [] }));
   const map = new Map();
   for (const item of Array.isArray(data.items) ? data.items : []) {
-    if (!item || typeof item.sid !== "string") continue;
-    map.set(item.sid, {
-      accessCount: Math.max(0, Number(item.accessCount || 0)),
-      lastAccessAt: Number(item.lastAccessAt || 0) || null,
-      accessUserAgentSample: typeof item.accessUserAgentSample === "string" ? item.accessUserAgentSample : "",
+    const sid = normalizeShareText(item?.sid);
+    if (!sid) continue;
+    map.set(sid, {
+      accessCount: normalizeNonNegativeInteger(item.accessCount),
+      lastAccessAt: normalizeOptionalTimestamp(item.lastAccessAt),
+      accessUserAgentSample: sanitizeShareUserAgent(item.accessUserAgentSample),
     });
   }
   return map;
 }
 
 export async function fetchSharedMeta(sid) {
+  const normalizedSid = normalizeShareText(sid);
   const token = getGlobalToken();
-  if (!token) return null;
+  if (!token || !normalizedSid) return null;
   try {
-    const r = await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}`), {
+    const r = await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(normalizedSid)}`), {
       headers: { "X-Token": token, "Cache-Control": "no-store" }
     });
     if (!r.ok) return null;
     const j = await r.json();
     if (!j || typeof j.k !== "string") return null;
     return {
-      sid,
+      sid: normalizedSid,
       k: j.k,
-      label: typeof j.label === "string" && j.label.trim() ? j.label.trim() : "分享",
-      projectName: typeof j.projectName === "string" ? j.projectName : "",
-      itemId: typeof j.itemId === "string" ? j.itemId : "",
-      issuer: typeof j.issuer === "string" ? j.issuer : "",
-      account: typeof j.account === "string" ? j.account : "",
-      createdAt: Number(j.createdAt || 0) || null,
+      label: normalizeShareText(j.label) || "分享",
+      projectName: normalizeShareText(j.projectName),
+      itemId: normalizeShareText(j.itemId),
+      issuer: normalizeShareText(j.issuer),
+      account: normalizeShareText(j.account),
+      createdAt: normalizeOptionalTimestamp(j.createdAt),
       ttl: j.ttl ?? null,
-      requiresPassword: !!j.requiresPassword,
+      requiresPassword: j.requiresPassword === true,
       protectedBundle: j.protectedBundle && typeof j.protectedBundle === "object" ? {
-        s: typeof j.protectedBundle.s === "string" ? j.protectedBundle.s : "",
-        iv: typeof j.protectedBundle.iv === "string" ? j.protectedBundle.iv : "",
-        wk: typeof j.protectedBundle.wk === "string" ? j.protectedBundle.wk : "",
-        iter: Number(j.protectedBundle.iter || 0) || null,
+        s: normalizeShareText(j.protectedBundle.s),
+        iv: normalizeShareText(j.protectedBundle.iv),
+        wk: normalizeShareText(j.protectedBundle.wk),
+        iter: normalizePositiveInteger(j.protectedBundle.iter),
       } : null,
     };
   } catch {
@@ -268,6 +350,49 @@ export async function fetchCloudShareRecords() {
       ...stat,
     };
   }));
-  records.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0) || a.sid.localeCompare(b.sid));
+  records.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.sid.localeCompare(b.sid));
   return records;
+}
+
+function throwForCloudShareNote(response, fallbackMessage) {
+  const note = response?.headers?.get?.("X-Note") || "";
+  if (note === "kv-missing") throw new Error("服务端未绑定 AUTH_KV");
+  if (note) throw new Error(fallbackMessage);
+}
+
+export function normalizeShareIds(values) {
+  const list = Array.isArray(values) ? values : [];
+  const out = [];
+  const seen = new Set();
+  for (const value of list) {
+    const sid = normalizeShareText(value);
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    out.push(sid);
+  }
+  return out;
+}
+
+function normalizeNonNegativeInteger(value, { fallback = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(0, n), max);
+}
+
+function normalizePositiveInteger(value) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function normalizeOptionalTimestamp(value) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n <= 0 || n > Number.MAX_SAFE_INTEGER) return null;
+  return n;
+}
+
+function sanitizeShareUserAgent(value) {
+  if (typeof value !== "string") return "";
+  const text = value.replace(/[\x00-\x1F\x7F]+/g, " ").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 160) : "";
 }
