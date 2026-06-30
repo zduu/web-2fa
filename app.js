@@ -402,7 +402,7 @@ async function handleShare(item) {
   const choice = await chooseTtl();
   if (!choice || choice.cancel) return;
   try {
-    const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "");
+    const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "", true, choice.showSecret || false);
     const copied = await copyText(r.link);
     await showShareLinkDialog({
       label: formatItemName(item) || "分享",
@@ -412,6 +412,7 @@ async function handleShare(item) {
       copied,
       password: choice.password || "",
       requiresPassword: !!r.requiresPassword,
+      showSecret: r.showSecret,
       recoveryStored: r.recoveryStored,
     });
   } catch (e) {
@@ -419,7 +420,7 @@ async function handleShare(item) {
   }
 }
 
-async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, password, requiresPassword, recoveryStored }) {
+async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, password, requiresPassword, showSecret, recoveryStored }) {
   let countdownTimer = null;
   const expiresAt = typeof ttl === "number" && ttl > 0 ? Date.now() + ttl * 1000 : null;
   openModal({
@@ -469,7 +470,7 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
       const qrStage = root.querySelector("#share-qr-stage");
       if (input) input.value = link;
       if (passwordInput) passwordInput.value = password;
-      if (status) status.textContent = formatShareResultStatus(label, copied, recoveryStored);
+      if (status) status.textContent = formatShareResultStatus(label, copied, recoveryStored) + (showSecret ? "（对方可查看 Secret）" : "");
 
       const renderMeta = () => {
         const parts = [];
@@ -594,9 +595,9 @@ function chooseTtl() {
       bodyHtml: `
         <div class="col gap-2">
           <div class="section-card" style="margin-bottom:8px;">
-            <div class="text-sm" style="font-weight:600; margin-bottom:6px;">这会分享该账户的 2FA Secret</div>
+            <div class="text-sm" style="font-weight:600; margin-bottom:6px;">安全模式（默认）：仅展示验证码</div>
             <div class="hint" style="line-height:1.7;">
-              对方拿到链接后，不是只看到当前验证码，而是能持续生成后续验证码。撤销链接也无法收回对方已经看到或抄走的 Secret。
+              对方只能看到当前验证码，拿不到 Secret。即使撤销链接，对方仍可看到已刷出的码（TOTP 码 30 秒轮换），但无法生成后续验证码。
             </div>
           </div>
           <label class="row gap-2"><input type="radio" name="ttl" value="default" checked /> <span>默认（后端配置，常为 24 小时）</span></label>
@@ -622,6 +623,16 @@ function chooseTtl() {
             <input id="share-passcode" class="input" type="password" maxlength="128" placeholder="留空表示不设置额外口令" />
             <div class="hint">设置后，链接本身无法直接打开，需要接收方另行输入这个口令。</div>
           </div>
+          <div class="section-card warn" style="margin-top:12px;">
+            <label class="row gap-2">
+              <input type="checkbox" id="share-show-secret" />
+              <div>
+                <div class="text-sm" style="font-weight:600;">允许对方查看 Secret 并导入自己的验证器</div>
+                <div class="hint" style="line-height:1.5; color:var(--danger);">
+                  ⚠️ 勾选后对方能拿到完整 Secret，可导入其验证器永久使用。撤销链接也无法收回。</div>
+              </div>
+            </label>
+          </div>
           <div class="hint mt-2">管理员分享记录会保存链接恢复材料，其他已登录管理员设备可在分享页重新复制完整链接。</div>
         </div>
       `,
@@ -638,10 +649,11 @@ function chooseTtl() {
           const note = (r.querySelector("#share-note")?.value || "").trim();
           const maxAccess = Number(r.querySelector("#share-max")?.value || 0) || 0;
           const password = (r.querySelector("#share-passcode")?.value || "").trim();
+          const showSecret = r.querySelector('#share-show-secret')?.checked === true;
           if (v === "perm") {
             const ok = await confirmDialog({
               title: "确认永久分享？",
-              message: "永久分享会长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret。确定继续？",
+              message: `永久分享会${showSecret ? "长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret" : "允许对方持续获取验证码"}。确定继续？`,
               danger: true,
               okText: "仍然分享",
             });
@@ -649,7 +661,7 @@ function chooseTtl() {
           }
           doClose();
           const ttl = v === "default" ? null : (v === "perm" ? "perm" : Number(v));
-          resolve({ ttl, note, maxAccess, password });
+          resolve({ ttl, note, maxAccess, password, showSecret });
         });
       }
     });

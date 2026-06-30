@@ -1,5 +1,6 @@
-// 共享验证码查看页：从 URL fragment 取密钥 → 拉取密文 → 解密 → 持续渲染
-// 复用 src/core/totp.js 的算法实现，避免与主端不一致
+// 共享验证码查看页
+// 安全模式（默认，#ck=）：服务端解密+计算验证码，接收方拿不到 secret
+// 完整模式（#k=）：客户端解密，接收方能拿到完整 secret
 
 import { totp, secondsLeft, formatCode } from "./src/core/totp.js";
 import { fromB64url } from "./src/core/crypto.js";
@@ -7,6 +8,7 @@ import { unwrapShareKeyWithPassword } from "./src/core/share-password.js";
 import { initTheme } from "./src/ui/theme.js";
 import { apiUrl, isLocalOnlyApp } from "./src/core/runtime.js";
 
+// 客户端解密（完整模式用）
 async function decryptPayload(payload, keyB64url) {
   const iv = fromB64url(payload.iv);
   const ct = fromB64url(payload.ct);
@@ -26,7 +28,12 @@ async function main() {
   const sid = params.get("sid");
   const frag = new URL(location.href).hash.replace(/^#/, "");
   const fragParams = new URLSearchParams(frag);
+
+  // 安全模式：#ck=codeKey（默认，接收方拿不到 secret）
+  const codeKey = fragParams.get("ck");
+  // 完整模式：#k=key（旧链接，接收方能拿到 secret）
   const kParam = fragParams.get("k");
+  // 口令保护
   const wrappedKey = fragParams.get("wk")
     ? {
         wk: fragParams.get("wk"),
@@ -35,27 +42,102 @@ async function main() {
         iter: Number(fragParams.get("iter") || 0) || undefined,
       }
     : null;
-  if (!sid || (!kParam && !wrappedKey)) { setLabel("缺少参数"); return; }
 
-  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`));
-  if (res.status === 410) { setLabel("分享已达访问上限，已失效"); return; }
-  if (res.status === 404) { setLabel("分享不存在或已过期"); return; }
-  if (!res.ok) { setLabel("分享不存在或已过期"); return; }
-  const remaining = res.headers.get("X-Access-Remaining");
-  let payload;
-  try { payload = await res.json(); } catch { setLabel("数据错误"); return; }
+  if (!sid) { setLabel("缺少参数"); return; }
 
-  if (wrappedKey) {
-    showPasswordGate(payload, wrappedKey, remaining);
+  // 安全模式：服务端计算，不需要本地密钥
+  if (codeKey) {
+    startCodeModeView(sid, codeKey);
     return;
   }
 
-  let data;
-  try { data = await decryptPayload(payload, kParam); } catch { setLabel("解密失败"); return; }
-  startShareView(data, remaining);
+  if (kParam || wrappedKey) {
+    startLegacyModeView(sid, kParam, wrappedKey);
+    return;
+  }
+
+  setLabel("链接不完整，缺少密钥参数");
 }
 
-function setLabel(t) { const el = document.getElementById("lbl"); if (el) el.textContent = t; }
+// ---- 安全模式（服务端计算验证码）----
+function startCodeModeView(sid, codeKey) {
+  setLabel("加载中…");
+  let ticker = null;
+
+  async function fetchCode() {
+    try {
+      const res = await fetch(apiUrl(`/api/share-code/${encodeURIComponent(sid)}?k=${encodeURIComponent(codeKey)}`));
+      if (res.status === 410) { stopTicker(); setLabel("分享已失效"); return null; }
+      if (res.status === 404) { stopTicker(); setLabel("分享不存在或已过期"); return null; }
+      if (!res.ok) { stopTicker(); setLabel("加载失败"); return null; }
+      const data = await res.json();
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  function stopTicker() {
+    if (ticker) { clearInterval(ticker); ticker = null; }
+  }
+
+  async function renderOnce() {
+    const data = await fetchCode();
+    if (!data) return;
+    document.getElementById("code").textContent = formatCode(data.code, data.digits);
+    const algoEl = document.getElementById("algo");
+    if (algoEl) algoEl.textContent = `${data.algorithm} · ${data.digits}位 · ${data.period}s`;
+    const periodInfo = document.getElementById("period-info");
+    if (periodInfo) periodInfo.textContent = `周期 ${data.period}s`;
+    // Update subtitle to indicate safe mode
+    const subEl = document.querySelector(".share-head .sub");
+    if (subEl) subEl.textContent = "安全模式 · 仅展示验证码，不含 Secret";
+    document.querySelector(".left").textContent = String(data.secondsLeft);
+    const pct = (data.secondsLeft / Math.max(1, data.period)) * 100;
+    const bar = document.querySelector(".bar");
+    if (bar) {
+      bar.style.width = pct + "%";
+      bar.style.background = data.secondsLeft <= 5
+        ? "linear-gradient(90deg, #ef4444, #f59e0b)"
+        : data.secondsLeft <= 10
+          ? "linear-gradient(90deg, #f59e0b, #fbbf24)"
+          : "linear-gradient(90deg, var(--ok), var(--primary))";
+    }
+    const note = document.getElementById("note");
+    if (note) { note.textContent = "安全模式：仅展示当前验证码，接收方无法获取密钥"; note.style.display = ""; }
+  }
+
+  renderOnce();
+  ticker = setInterval(renderOnce, 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") renderOnce();
+  });
+  window.addEventListener("beforeunload", () => stopTicker());
+
+  bindCopyActions();
+}
+
+// ---- 完整模式（客户端解密，旧链接兼容）----
+function startLegacyModeView(sid, kParam, wrappedKey) {
+  if (wrappedKey) {
+    showPasswordGate(null, wrappedKey, null);
+    return;
+  }
+
+  (async () => {
+    const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}`));
+    if (res.status === 410) { setLabel("分享已达访问上限，已失效"); return; }
+    if (res.status === 404) { setLabel("分享不存在或已过期"); return; }
+    if (!res.ok) { setLabel("分享不存在或已过期"); return; }
+    const remaining = res.headers.get("X-Access-Remaining");
+    let payload;
+    try { payload = await res.json(); } catch { setLabel("数据错误"); return; }
+
+    let data;
+    try { data = await decryptPayload(payload, kParam); } catch { setLabel("解密失败"); return; }
+    startLegacyShareView(data, remaining);
+  })();
+}
 
 function showPasswordGate(payload, wrappedKey, remaining) {
   const gate = document.getElementById("password-gate");
@@ -65,6 +147,15 @@ function showPasswordGate(payload, wrappedKey, remaining) {
   if (gate) gate.style.display = "";
   if (content) content.style.display = "none";
   setLabel("需要访问口令");
+
+  // 用 cm=1 片段标记区分安全模式+口令 vs 完整模式+口令
+  const frag = new URL(location.href).hash.replace(/^#/, "");
+  const fragParams = new URLSearchParams(frag);
+  const codeKey = fragParams.get("ck");
+  const kParam = fragParams.get("k");
+  const isCodeMode = fragParams.get("cm") === "1" || !!codeKey;
+  const sid = new URLSearchParams(location.search).get("sid");
+
   const unlock = async () => {
     const password = input?.value || "";
     if (!password.trim()) {
@@ -75,11 +166,18 @@ function showPasswordGate(payload, wrappedKey, remaining) {
     if (button) button.disabled = true;
     try {
       const raw = await unwrapShareKeyWithPassword(wrappedKey, password);
-      const data = await decryptPayload(payload, toB64url(raw));
+      const keyB64 = toB64url(raw);
+
       if (gate) gate.style.display = "none";
       if (content) content.style.display = "";
       if (input) input.value = "";
-      startShareView(data, remaining);
+
+      if (isCodeMode) {
+        startCodeModeView(sid, keyB64);
+      } else {
+        const data = await decryptPayload(payload, keyB64);
+        startLegacyShareView(data, remaining);
+      }
       toast("已解锁分享", "ok");
     } catch {
       toast("口令错误或链接损坏", "err");
@@ -96,12 +194,14 @@ function showPasswordGate(payload, wrappedKey, remaining) {
   input?.focus();
 }
 
-function startShareView(data, remaining) {
+function startLegacyShareView(data, remaining) {
   const label = data.label || "共享验证码";
   setLabel(label);
   document.getElementById("algo").textContent = `${(data.algorithm || "SHA1").toUpperCase()} · ${data.digits || 6}位 · ${data.period || 30}s`;
   const periodInfo = document.getElementById("period-info");
   if (periodInfo) periodInfo.textContent = `周期 ${data.period || 30}s`;
+  const subEl = document.querySelector(".share-head .sub");
+  if (subEl) subEl.textContent = "完整模式 · 含 Secret · 可导入验证器";
   if (typeof data.note === "string" && data.note.trim()) {
     const noteEl = document.getElementById("note");
     if (noteEl) {
@@ -109,7 +209,7 @@ function startShareView(data, remaining) {
       noteEl.style.display = "";
     }
   }
-  if (remaining && remaining !== "∞") {
+  if (remaining && remaining !== "unlimited") {
     const periodInfo2 = document.getElementById("period-info");
     if (periodInfo2) periodInfo2.textContent = `${periodInfo2.textContent} · 剩余 ${remaining} 次访问`;
   }
@@ -141,7 +241,11 @@ function startShareView(data, remaining) {
   });
   window.addEventListener("beforeunload", () => clearInterval(ticker));
 
-  document.getElementById("copy").addEventListener("click", async () => {
+  bindCopyActions();
+}
+
+function bindCopyActions() {
+  document.getElementById("copy")?.addEventListener("click", async () => {
     const shown = document.getElementById("code")?.textContent?.replace(/\s+/g, "") || "";
     if (!shown || shown === "ERR") { toast("验证码尚未就绪", "warn"); return; }
     const ok = await copyText(shown);
@@ -152,6 +256,8 @@ function startShareView(data, remaining) {
     toast(ok ? "已复制链接" : "复制失败", ok ? "ok" : "err");
   });
 }
+
+function setLabel(t) { const el = document.getElementById("lbl"); if (el) el.textContent = t; }
 
 function toB64url(bytes) {
   const bin = Array.from(bytes, (b) => String.fromCharCode(b)).join("");

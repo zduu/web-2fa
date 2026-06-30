@@ -141,6 +141,7 @@ async function cleanupShare(env, id, { strictPrimary = false } = {}) {
   } catch (error) {
     if (strictPrimary) throw error;
   }
+  try { await env.AUTH_KV.delete(`sharecode:${id}`); } catch {}
   try { await env.AUTH_KV.delete(`sharekey:${id}`); } catch {}
   try { await env.AUTH_KV.delete(`sharestat:${id}`); } catch {}
 }

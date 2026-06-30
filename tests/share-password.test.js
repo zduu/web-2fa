@@ -97,7 +97,7 @@ describe("share password protection", () => {
     }, null, { projectName: " Work ", itemId: " item-1 " });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/share/");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/share-code/");
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toContain("/api/sharekey/");
     const body = JSON.parse(init.body);
@@ -233,7 +233,7 @@ describe("share password protection", () => {
     }, null, { storeKey: false });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/share/");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/share-code/");
     expect(result.recoveryStored).toBe(false);
   });
 

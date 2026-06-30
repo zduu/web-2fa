@@ -1,5 +1,7 @@
 // 分享：生成 / 撤销 / 列表 / 重新分享 / 绑定密钥
-// 临时分享：随机 AES-GCM 密钥 + 随机 SID。密钥放 URL fragment (#k=...)。
+// 临时分享：随机 AES-GCM 密钥 + 随机 SID。
+// 默认安全模式：密钥放 URL fragment (#ck=...)，服务端解密+计算验证码，接收方拿不到 secret。
+// 可选完整模式（showSecret=true）：密钥放 URL fragment (#k=...)，客户端解密+本地计算。
 
 import {
   state,
@@ -20,6 +22,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const otpPayload = normalizeOtpPayload(item);
   if (otpPayload.type !== "totp") throw new Error("仅支持分享 TOTP");
 
+  const showSecret = meta.showSecret === true;
   const note = typeof meta.note === "string" ? meta.note.slice(0, 280) : "";
   const maxAccess = normalizeNonNegativeInteger(meta.maxAccess, { max: 1_000_000 });
   const password = typeof meta.password === "string" ? meta.password.trim() : "";
@@ -44,17 +47,6 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const sidBytes = crypto.getRandomValues(new Uint8Array(12));
   const sid = b64url(sidBytes);
   const body = JSON.stringify({ v: 1, iv: b64url(iv), ct: b64url(ct) });
-  let protectedBundle = null;
-  const fragment = new URLSearchParams();
-  if (password) {
-    protectedBundle = await wrapShareKeyWithPassword(keyRaw, password);
-    fragment.set("s", protectedBundle.s);
-    fragment.set("iv", protectedBundle.iv);
-    fragment.set("wk", protectedBundle.wk);
-    fragment.set("iter", String(protectedBundle.iter));
-  } else {
-    fragment.set("k", b64url(keyRaw));
-  }
 
   const qsParts = [];
   if (ttlSeconds === "perm" || ttlSeconds === 0) qsParts.push("ttl=perm");
@@ -69,9 +61,41 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   const token = getGlobalToken();
   if (token) headers["X-Token"] = token;
 
-  const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
-  throwForCloudShareNote(res, "创建分享失败");
-  if (!res.ok) { const e = new Error(`server-${res.status}`); e.status = res.status; throw e; }
+  let protectedBundle = null;
+  const fragment = new URLSearchParams();
+
+  if (showSecret) {
+    // 完整模式：客户端解密，接收方能拿到完整 secret（可导入自己的验证器）
+    const res = await fetch(apiUrl(`/api/share/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
+    throwForCloudShareNote(res, "创建分享失败");
+    if (!res.ok) { const e = new Error(`server-${res.status}`); e.status = res.status; throw e; }
+
+    if (password) {
+      protectedBundle = await wrapShareKeyWithPassword(keyRaw, password);
+      fragment.set("s", protectedBundle.s);
+      fragment.set("iv", protectedBundle.iv);
+      fragment.set("wk", protectedBundle.wk);
+      fragment.set("iter", String(protectedBundle.iter));
+    } else {
+      fragment.set("k", b64url(keyRaw));
+    }
+  } else {
+    // 安全模式（默认）：服务端解密+计算验证码，接收方拿不到 secret
+    const codeRes = await fetch(apiUrl(`/api/share-code/${encodeURIComponent(sid)}${qs}`), { method: "PUT", headers, body });
+    throwForCloudShareNote(codeRes, "创建安全分享失败");
+    if (!codeRes.ok) { const e = new Error(`server-${codeRes.status}`); e.status = codeRes.status; throw e; }
+
+    if (password) {
+      protectedBundle = await wrapShareKeyWithPassword(keyRaw, password);
+      fragment.set("s", protectedBundle.s);
+      fragment.set("iv", protectedBundle.iv);
+      fragment.set("wk", protectedBundle.wk);
+      fragment.set("iter", String(protectedBundle.iter));
+      fragment.set("cm", "1");
+    } else {
+      fragment.set("ck", b64url(keyRaw));
+    }
+  }
 
   // Admin convenience: store share recovery material by default so any
   // ADMIN_KEY-authenticated device can copy the full link later.
@@ -93,6 +117,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
           ttl: ttlSeconds === null ? "default" : ttlSeconds,
           maxAccess,
           requiresPassword: !!password,
+          showSecret,
           protectedBundle: protectedBundle || null,
         })
       });
@@ -101,11 +126,11 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
   } catch {}
 
   const link = `${getPublicBaseUrl()}/shared.html?sid=${encodeURIComponent(sid)}#${fragment.toString()}`;
-  return { link, sid, k: b64url(keyRaw), requiresPassword: !!password, recoveryStored };
+  return { link, sid, k: b64url(keyRaw), requiresPassword: !!password, showSecret, recoveryStored };
 }
 
 // Share an item that is currently visible (handles both single-project and "_all_" view)
-export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "", storeKey = true) {
+export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "", storeKey = true, showSecret = false) {
   const isAll = state.currentProjectId === "_all_";
   const target = isAll
     ? findItemInProject(item._projectId, item.id)
@@ -123,6 +148,7 @@ export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, pass
     maxAccess,
     password,
     storeKey,
+    showSecret,
   });
   // Write share record back to source
   if (target) {
