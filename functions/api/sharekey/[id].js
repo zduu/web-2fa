@@ -2,50 +2,65 @@
 // 鉴权：X-Token 匹配 ADMIN_KEY 或 SYNC_TOKEN
 
 import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
+import { normalizeRouteId } from "../../_lib/ids.js";
+import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
+import { normalizeShareKeyPayload } from "../../_lib/share-key.js";
+import { parseOptionalShareTtl } from "../../_lib/share-options.js";
 
 export async function onRequest(context) {
   const { request, env, params } = context;
-  const id = params.id;
-  if (!id) return new Response("Missing id", { status: 400 });
+  const id = normalizeRouteId(params.id);
+  if (!id) return noStoreResponse("Missing id", 400);
   const key = `sharekey:${id}`;
   const tokenHeader = request.headers.get("X-Token");
   if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
 
   const url = new URL(request.url);
-  const ttlParam = url.searchParams.get("ttl");
-  let ttl;
-  if (ttlParam) {
-    const s = ttlParam.toLowerCase();
-    if (s === "perm" || s === "0" || s === "permanent") ttl = 0;
-    else { const n = Number(s); if (Number.isFinite(n) && n > 0) ttl = Math.round(n); }
-  }
+  const ttl = parseOptionalShareTtl(url.searchParams.get("ttl"));
 
-  if (request.method === "GET") {
-    const value = await env.AUTH_KV.get(key);
-    if (!value) return new Response("Not found", { status: 404 });
-    return new Response(value, { status: 200, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
-  }
-
-  if (request.method === "PUT" || request.method === "POST") {
-    const text = await request.text();
-    try {
-      const obj = JSON.parse(text);
-      if (!obj || typeof obj !== "object" || typeof obj.k !== "string") throw new Error("invalid");
-    } catch {
-      return new Response("Bad Request", { status: 400 });
+  try {
+    if (request.method === "GET") {
+      if (!hasKvMethods(env, ["get"])) return kvMissingTextResponse(200);
+      const value = await env.AUTH_KV.get(key);
+      if (!value) return noStoreResponse("Not found", 404);
+      return new Response(value, { status: 200, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
     }
-    if (ttl === 0 || ttl === undefined) {
-      await env.AUTH_KV.put(key, text);
-    } else {
-      await env.AUTH_KV.put(key, text, { expirationTtl: ttl });
+
+    if (request.method === "PUT" || request.method === "POST") {
+      if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse(200);
+      const text = await request.text();
+      let payload;
+      try {
+        const obj = JSON.parse(text);
+        payload = normalizeShareKeyPayload(obj);
+        if (!payload) throw new Error("invalid");
+      } catch {
+        return noStoreResponse("Bad Request", 400);
+      }
+      const body = JSON.stringify(payload);
+      if (ttl === 0 || ttl === undefined) {
+        await env.AUTH_KV.put(key, body);
+      } else {
+        await env.AUTH_KV.put(key, body, { expirationTtl: ttl });
+      }
+      return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
     }
-    return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
-  }
 
-  if (request.method === "DELETE") {
-    await env.AUTH_KV.delete(key);
-    return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
-  }
+    if (request.method === "DELETE") {
+      if (!hasKvMethods(env, ["delete"])) return kvMissingTextResponse(200);
+      await env.AUTH_KV.delete(key);
+      return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
+    }
 
-  return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, PUT, POST, DELETE" } });
+    return noStoreResponse("Method Not Allowed", 405, { Allow: "GET, PUT, POST, DELETE" });
+  } catch {
+    return noStoreResponse("Server Error", 500, { "X-Note": "error" });
+  }
+}
+
+function noStoreResponse(body, status, headers = {}) {
+  return new Response(body, {
+    status,
+    headers: { ...headers, "Cache-Control": "no-store" },
+  });
 }

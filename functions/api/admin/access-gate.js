@@ -5,6 +5,7 @@ import {
   getAccessGateState,
   saveAccessGateConfig,
 } from "../../_lib/access-gate.js";
+import { hasKvMethods, kvMissingJsonResponse } from "../../_lib/kv.js";
 
 export async function onRequestGet(context) {
   const { env, request } = context;
@@ -37,11 +38,11 @@ export async function onRequestPut(context) {
     return json({ success: false, error: "Bad Request" }, 400);
   }
 
-  if (!(env.AUTH_KV && env.AUTH_KV.get && env.AUTH_KV.put)) {
-    return json({ success: false, error: "AUTH_KV missing" }, 400);
+  if (!hasKvMethods(env, ["get", "put"])) {
+    return kvMissingJsonResponse(400);
   }
 
-  const enabled = !!body?.enabled;
+  const enabled = body?.enabled === true;
   let gate;
   try {
     gate = await saveAccessGateConfig(env, { enabled });

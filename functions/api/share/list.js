@@ -2,6 +2,7 @@
 // 鉴权：X-Token 匹配 ADMIN_KEY 或 SYNC_TOKEN
 
 import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
+import { normalizeKvSuffix } from "../../_lib/ids.js";
 
 export async function onRequestGet(context) {
   const { env, request } = context;
@@ -19,8 +20,8 @@ export async function onRequestGet(context) {
       }
       const res = await env.AUTH_KV.list({ prefix: "share:", cursor });
       for (const k of res.keys) {
-        const name = k.name.startsWith("share:") ? k.name.slice("share:".length) : k.name;
-        out.push(name);
+        const sid = normalizeKvSuffix(k.name, "share:");
+        if (sid) out.push(sid);
       }
       cursor = res.list_complete ? undefined : res.cursor;
     } while (cursor);

@@ -4,43 +4,40 @@ import {
   getAccessGateState,
   readAccessGateCookie,
 } from "../_lib/access-gate.js";
+import { timingSafeEqualString } from "../_lib/auth.js";
 
 export async function onRequestGet(context) {
   const { request, env } = context;
   const gate = await getAccessGateState(env);
-  if (!gate.enabled) return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  if (!gate.enabled) return noStoreResponse(null, 204);
   const got = readAccessGateCookie(request);
-  if (got && timingSafeEqual(got, gate.cookieValue)) {
-    return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
+  if (got && timingSafeEqualString(got, gate.cookieValue)) {
+    return noStoreResponse("OK");
   }
-  return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
+  return noStoreResponse("Forbidden", 403);
 }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
   const gate = await getAccessGateState(env);
-  if (!gate.enabled) return new Response("Disabled", { status: 400 });
+  if (!gate.enabled) return noStoreResponse("Disabled", 400);
   let body;
-  try { body = await request.json(); } catch { return new Response("Bad Request", { status: 400 }); }
+  try { body = await request.json(); } catch { return noStoreResponse("Bad Request", 400); }
   const pass = (body && body.password) || "";
-  if (!(await gate.verifyPassword(pass))) return new Response("Unauthorized", { status: 401 });
+  if (!(await gate.verifyPassword(pass))) return noStoreResponse("Unauthorized", 401);
   const headers = new Headers();
   headers.set("Set-Cookie", buildAccessGateCookie(gate.cookieValue));
-  headers.set("Cache-Control", "no-store");
-  return new Response("OK", { status: 200, headers });
+  return noStoreResponse("OK", 200, headers);
 }
 
 export async function onRequestDelete(context) {
   const headers = new Headers();
   headers.set("Set-Cookie", buildAccessGateClearCookie());
-  headers.set("Cache-Control", "no-store");
-  return new Response("OK", { status: 200, headers });
+  return noStoreResponse("OK", 200, headers);
 }
 
-function timingSafeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));
-  return diff === 0;
+function noStoreResponse(body, status = 200, headers = new Headers()) {
+  const nextHeaders = new Headers(headers);
+  nextHeaders.set("Cache-Control", "no-store");
+  return new Response(body, { status, headers: nextHeaders });
 }

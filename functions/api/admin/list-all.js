@@ -2,29 +2,31 @@
 // 鉴权：X-KV-Admin-Key 匹配任一管理员密钥（含 KV_ADMIN_KEY/ADMIN_KEY/SYNC_TOKEN），
 // 或 X-Token 匹配 ADMIN_KEY/SYNC_TOKEN
 
-import { isAdminAuthed } from "../../_lib/auth.js";
+import { hasConfiguredAdminKey, isAdminAuthed } from "../../_lib/auth.js";
+import { normalizeKvSuffix } from "../../_lib/ids.js";
+import { hasKvMethods, kvMissingJsonResponse } from "../../_lib/kv.js";
+import { normalizeOptionalTimestamp, normalizePositiveInteger } from "../../_lib/numbers.js";
+import { isCipherPayload } from "../../_lib/payload.js";
 
 export async function onRequestPost(context) {
   const { env, request } = context;
 
-  if (!env.KV_ADMIN_KEY && !env.ADMIN_KEY && !env.SYNC_TOKEN) {
-    return new Response(JSON.stringify({
+  if (!hasConfiguredAdminKey(env)) {
+    return json({
       success: false,
       error: "No admin key configured on server (ADMIN_KEY, SYNC_TOKEN, or KV_ADMIN_KEY required)",
-    }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Note": "admin_key_missing" },
-    });
+    }, 200, { "X-Note": "admin_key_missing" });
   }
 
   if (!isAdminAuthed(env, request)) {
-    return new Response(JSON.stringify({
+    return json({
       success: false,
       error: "Unauthorized: Invalid or missing admin key",
-    }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+    }, 401);
+  }
+
+  if (!hasKvMethods(env, ["list", "get"])) {
+    return kvMissingJsonResponse();
   }
 
   try {
@@ -33,17 +35,20 @@ export async function onRequestPost(context) {
     do {
       const res = await env.AUTH_KV.list({ prefix: "sync:", cursor });
       for (const k of res.keys) {
-        const syncId = k.name.startsWith("sync:") ? k.name.slice("sync:".length) : k.name;
+        const syncId = normalizeKvSuffix(k.name, "sync:");
+        if (!syncId) continue;
         const value = await env.AUTH_KV.get(k.name);
         if (!value) continue;
         try {
           const data = JSON.parse(value);
+          const valid = isCipherPayload(data);
           syncProjects.push({
             syncId,
             metadata: {
-              version: data.v || 1,
-              hasData: !!(data.iv && data.ct),
-              updatedAt: k.metadata?.updatedAt || null,
+              version: normalizePositiveInteger(data.v) || 1,
+              hasData: valid,
+              valid,
+              updatedAt: normalizeOptionalTimestamp(k.metadata?.updatedAt),
             },
             encryptedData: data,
           });
@@ -54,19 +59,20 @@ export async function onRequestPost(context) {
       cursor = res.list_complete ? undefined : res.cursor;
     } while (cursor);
 
-    return new Response(JSON.stringify({
+    return json({
       success: true,
       total: syncProjects.length,
       projects: syncProjects,
-    }), {
-      status: 200,
-      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
     });
   } catch (e) {
     console.error("Error listing all projects:", e);
-    return new Response(JSON.stringify({ success: false, error: "Server Error" }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Note": "error" },
-    });
+    return json({ success: false, error: "Server Error" }, 200, { "X-Note": "error" });
   }
+}
+
+function json(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers },
+  });
 }
