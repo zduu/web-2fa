@@ -46,28 +46,24 @@ describe("admin unlock", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not accept admin list-all success-false responses as valid keys", async () => {
+  it("still treats non-admin-key-missing 200 responses as valid (server errors don't invalidate the key)", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
       success: false,
       error: "Server Error",
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
-    await expect(verifyAdminKey("admin-token")).resolves.toEqual({
-      ok: false,
-      msg: "Server Error",
-    });
+    // 200 且非 admin_key_missing → 鉴权已通过（服务端内部错误不影响 Key 有效性）
+    await expect(verifyAdminKey("admin-token")).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not accept non-2xx share-list fallback responses", async () => {
+  it("treats non-401 share-list fallback as key-verified (server errors don't invalidate the key)", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: false }), { status: 503 }))
       .mockResolvedValueOnce(new Response("Server Error", { status: 500 }));
 
-    await expect(verifyAdminKey("admin-token")).resolves.toEqual({
-      ok: false,
-      msg: "HTTP 500",
-    });
+    // 500 不是 401 → Key 正确，服务端内部错误不影响判断
+    await expect(verifyAdminKey("admin-token")).resolves.toEqual({ ok: true });
   });
 
   it("does not accept share-list fallback responses with error notes", async () => {
@@ -84,7 +80,7 @@ describe("admin unlock", () => {
     });
   });
 
-  it("does not accept share-list fallback list-error notes", async () => {
+  it("treats unknown X-Note headers in share-list as non-blocking", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: false }), { status: 503 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ sids: [] }), {
@@ -92,9 +88,7 @@ describe("admin unlock", () => {
         headers: { "Content-Type": "application/json", "X-Note": "list-error" },
       }));
 
-    await expect(verifyAdminKey("admin-token")).resolves.toEqual({
-      ok: false,
-      msg: "Admin Key 验证失败",
-    });
+    // 未知 X-Note 不影响 Key 有效性判断（只有 kv-missing 需要特殊提示）
+    await expect(verifyAdminKey("admin-token")).resolves.toEqual({ ok: true });
   });
 });

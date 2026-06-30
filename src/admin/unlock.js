@@ -11,6 +11,8 @@ export async function verifyAdminKey(adminKey) {
   if (!adminKey) return { ok: false, msg: "请输入 Admin Key" };
 
   // 优先用 /api/admin/list-all 探测（这个 endpoint 一定需要鉴权）
+  // 原则：只要服务端没有返回 401，就说明 Admin Key 鉴权已通过；
+  // 其他错误（服务端异常、网关拦截等）不应影响 Key 有效性判断。
   try {
     const res = await fetch(apiUrl("/api/admin/list-all"), {
       method: "POST",
@@ -20,16 +22,19 @@ export async function verifyAdminKey(adminKey) {
         "Content-Type": "application/json"
       }
     });
+    // 401 是唯一表示"Key 不对"的信号
     if (res.status === 401) return { ok: false, msg: "Admin Key 不正确" };
     if (res.status === 200) {
       const data = await res.json().catch(() => ({}));
       if (data?.success === false && isAdminKeyMissingResponse(res, data)) {
-        // server didn't configure ADMIN_KEY/KV_ADMIN_KEY; fall back to share/list probe
+        // 服务端未配置任何 Admin Key → 用 share/list 再探一次
         return await probeShareList(adminKey);
       }
-      if (data?.success === false) return { ok: false, msg: data.error || "Admin Key 验证失败" };
+      // 200 且非 admin_key_missing → 鉴权已通过（success:false 可能是服务端内部错误）
       return { ok: true };
     }
+    // 非 200 非 401（网关拦截、503 等）→ 降级到 share/list
+    return await probeShareList(adminKey);
   } catch {}
   return await probeShareList(adminKey);
 }
@@ -45,12 +50,13 @@ async function probeShareList(adminKey) {
     const res = await fetch(apiUrl("/api/share/list"), {
       headers: { "X-Token": adminKey }
     });
+    // 同样原则：只要不是 401，Key 就是对的
     if (res.status === 401) return { ok: false, msg: "Admin Key 不正确" };
-    const note = res.headers?.get?.("X-Note") || "";
-    if (note === "kv-missing") return { ok: false, msg: "服务端未绑定 AUTH_KV" };
-    if (note) return { ok: false, msg: "Admin Key 验证失败" };
-    if (res.ok) return { ok: true };
-    return { ok: false, msg: `HTTP ${res.status}` };
+    // 明确的服务端配置问题单独提示
+    if (res.headers?.get?.("X-Note") === "kv-missing") {
+      return { ok: false, msg: "服务端未绑定 AUTH_KV" };
+    }
+    return { ok: true };
   } catch (e) {
     return { ok: false, msg: "网络错误" };
   }
