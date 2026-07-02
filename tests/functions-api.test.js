@@ -8,6 +8,10 @@ import {
   needsAuthForWrite,
   timingSafeEqualString,
 } from "../functions/_lib/auth.js";
+import {
+  getGithubBackupConfig,
+  renderGithubBackupPath,
+} from "../functions/_lib/github-backup.js";
 import { normalizeKvSuffix, normalizeRouteId } from "../functions/_lib/ids.js";
 import {
   normalizeHttpStatus,
@@ -90,6 +94,12 @@ async function encryptSharePayload(payload) {
     key: b64url(keyRaw),
     record: { v: 1, iv: b64url(iv), ct: b64url(ct) },
   };
+}
+
+function decodeBase64Json(value) {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 describe("Functions API encrypted payload validation", () => {
@@ -196,6 +206,26 @@ describe("Functions API encrypted payload validation", () => {
     expect(isCipherPayload({ iv: "iv", ct: "" })).toBe(false);
     expect(isCipherPayload({ iv: 1, ct: "ciphertext" })).toBe(false);
     expect(isCipherPayload(null)).toBe(false);
+  });
+
+  it("keeps GitHub sync backup disabled until required environment variables are set", () => {
+    expect(getGithubBackupConfig({})).toEqual({ enabled: false });
+    expect(getGithubBackupConfig({ GITHUB_BACKUP_BRANCH: "backup" })).toEqual({ enabled: false });
+    expect(getGithubBackupConfig({ GITHUB_BACKUP_PATH: ".web-2fa/{id}.json" })).toEqual({ enabled: false });
+    expect(getGithubBackupConfig({ GITHUB_BACKUP_TOKEN: "ghp_token" })).toMatchObject({
+      enabled: true,
+      valid: false,
+    });
+    expect(getGithubBackupConfig({
+      GITHUB_BACKUP_TOKEN: "ghp_token",
+      GITHUB_BACKUP_REPO: "owner/private-backups",
+    })).toMatchObject({
+      enabled: true,
+      valid: true,
+      owner: "owner",
+      repo: "private-backups",
+    });
+    expect(renderGithubBackupPath(".web-2fa/{id}.json", "team/demo")).toBe(".web-2fa/team%2Fdemo.json");
   });
 
   it("accepts current and legacy vault ciphertext shapes", () => {
@@ -314,6 +344,128 @@ describe("Functions API encrypted payload validation", () => {
     expect(del).toHaveBeenCalledWith("syncbak:demo:bad");
     expect(del).toHaveBeenCalledWith("syncbak:demo:1000");
     expect(del).not.toHaveBeenCalledWith("syncbak:demo:1005");
+  });
+
+  it("does not call GitHub when sync backup environment variables are absent", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unexpected"));
+    try {
+      const put = vi.fn(async () => {});
+      const res = await onSyncRequest(authedContext({
+        method: "PUT",
+        body: { v: 1, iv: "iv", ct: "ciphertext" },
+        put,
+        path: "/api/sync/demo",
+      }));
+
+      expect(res.status).toBe(200);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(put).toHaveBeenCalledWith("sync:demo", JSON.stringify({ v: 1, iv: "iv", ct: "ciphertext" }), { expirationTtl: 60 * 60 * 24 * 365 });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("writes encrypted sync payloads to GitHub when external backup is configured", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init = {}) => {
+      if (init.method === "GET") return new Response("Not found", { status: 404 });
+      if (init.method === "PUT") return new Response(JSON.stringify({ content: { sha: "new-sha" } }), { status: 201 });
+      return new Response("unexpected", { status: 500 });
+    });
+    try {
+      const put = vi.fn(async () => {});
+      const ctx = authedContext({
+        method: "PUT",
+        body: { v: 1, iv: "iv", ct: "ciphertext" },
+        put,
+        path: "/api/sync/demo/project",
+        params: { id: "demo/project" },
+      });
+      Object.assign(ctx.env, {
+        GITHUB_BACKUP_TOKEN: "github-token",
+        GITHUB_BACKUP_REPO: "owner/private-backups",
+        GITHUB_BACKUP_BRANCH: "backup",
+      });
+
+      const res = await onSyncRequest(ctx);
+      const githubPut = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const backupDoc = decodeBase64Json(githubPut.content);
+
+      expect(res.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(fetchMock.mock.calls[0][0])).toContain("https://api.github.com/repos/owner/private-backups/contents/.web-2fa-backup/sync/demo%252Fproject.web2fa-backup.json?ref=backup");
+      expect(githubPut.sha).toBeUndefined();
+      expect(githubPut.branch).toBe("backup");
+      expect(githubPut.message).toContain("demo/project");
+      expect(backupDoc).toMatchObject({
+        type: "web-2fa.sync-github-backup",
+        version: 1,
+        syncId: "demo/project",
+        payload: { v: 1, iv: "iv", ct: "ciphertext" },
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("includes the current GitHub file sha when updating an existing backup", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init = {}) => {
+      if (init.method === "GET") return new Response(JSON.stringify({ sha: "current-sha" }), { status: 200 });
+      if (init.method === "PUT") return new Response(JSON.stringify({ content: { sha: "next-sha" } }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    try {
+      const ctx = authedContext({
+        method: "PUT",
+        body: { v: 1, iv: "iv", ct: "ciphertext" },
+        path: "/api/sync/demo",
+      });
+      Object.assign(ctx.env, {
+        GITHUB_BACKUP_TOKEN: "github-token",
+        GITHUB_BACKUP_REPO: "owner/private-backups",
+        GITHUB_BACKUP_BRANCH: "backup",
+      });
+
+      const res = await onSyncRequest(ctx);
+      const githubPut = JSON.parse(fetchMock.mock.calls[1][1].body);
+
+      expect(res.status).toBe(200);
+      expect(String(fetchMock.mock.calls[0][0])).toContain("?ref=backup");
+      expect(String(fetchMock.mock.calls[1][0])).not.toContain("?ref=backup");
+      expect(githubPut.sha).toBe("current-sha");
+      expect(githubPut.branch).toBe("backup");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("reports configured GitHub backup failures as successful sync warnings", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init = {}) => {
+      if (init.method === "GET") return new Response("Not found", { status: 404 });
+      if (init.method === "PUT") return new Response("GitHub down", { status: 500 });
+      return new Response("unexpected", { status: 500 });
+    });
+    try {
+      const put = vi.fn(async () => {});
+      const ctx = authedContext({
+        method: "PUT",
+        body: { v: 1, iv: "iv", ct: "ciphertext" },
+        put,
+        path: "/api/sync/demo",
+      });
+      Object.assign(ctx.env, {
+        GITHUB_BACKUP_TOKEN: "github-token",
+        GITHUB_BACKUP_REPO: "owner/private-backups",
+      });
+
+      const res = await onSyncRequest(ctx);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("X-Note")).toBe("github-backup-failed");
+      expect(res.headers.get("X-Backup-Status")).toBe("failed");
+      expect(put).toHaveBeenCalledWith("sync:demo", JSON.stringify({ v: 1, iv: "iv", ct: "ciphertext" }), { expirationTtl: 60 * 60 * 24 * 365 });
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("marks missing sync records as no-store", async () => {

@@ -176,6 +176,10 @@ Pages 项目 → Settings → Functions → KV Bindings：变量名 `AUTH_KV` �
 | `SHARE_TTL` | 可选 | 分享默认有效期（秒，<=0 表示永久） |
 | `SYNC_TOKEN` | 兼容 | 旧版别名，等价于 ADMIN_KEY |
 | `KV_ADMIN_KEY` | 兼容 | 旧版别名，等价于 ADMIN_KEY（云端浏览专用） |
+| `GITHUB_BACKUP_TOKEN` | 可选 | GitHub 私有仓库备份 token；不设置则不启用外部备份 |
+| `GITHUB_BACKUP_REPO` | 可选 | GitHub 备份仓库，格式 `owner/repo`；需与 token 同时设置 |
+| `GITHUB_BACKUP_BRANCH` | 可选 | 写入分支；留空使用仓库默认分支 |
+| `GITHUB_BACKUP_PATH` | 可选 | 备份文件路径模板，默认 `.web-2fa-backup/sync/{id}.web2fa-backup.json` |
 
 > **建议**：只配 `ADMIN_KEY`，再决定 `SYNC_MODE`。其他都默认。
 
@@ -183,6 +187,21 @@ Pages 项目 → Settings → Functions → KV Bindings：变量名 `AUTH_KV` �
 - 进入网站后，管理员现在可直接在“管理员”页里启用/关闭访问口令
 - 站内只保存“是否启用”的开关，口令内容始终读取 Cloudflare Pages 的 `ACCESS_GATE`
 - 若未设置 `ACCESS_GATE`，管理员页将无法启用访问口令
+
+### GitHub 私有仓库外部备份
+
+如需在 Cloudflare KV 之外再保留一份平台外备份，可在 Cloudflare Pages 环境变量中设置：
+
+```text
+GITHUB_BACKUP_TOKEN=github fine-grained token
+GITHUB_BACKUP_REPO=owner/private-repo
+GITHUB_BACKUP_BRANCH=backup        # 可选
+GITHUB_BACKUP_PATH=.web-2fa-backup/sync/{id}.web2fa-backup.json
+```
+
+启用后，每次 `PUT /api/sync/:id` 写入成功，Functions 会把同一份同步密文写到 GitHub 仓库。备份文件内容仍然是客户端用 `Sync Secret` 加密后的密文，GitHub token、`Admin Key` 和 `Sync Secret` 都不会写入备份文件。若未设置 `GITHUB_BACKUP_TOKEN` 和 `GITHUB_BACKUP_REPO`，该逻辑完全不启用。
+
+Token 建议使用 GitHub fine-grained personal access token，只授权目标私有仓库的 `Contents: Read and write` 权限。默认路径里的 `{id}` 会替换为 URL 编码后的 Sync ID；如果你固定设置一个不含 `{id}` 的路径，多个同步项目会写入同一个文件。GitHub 写入失败时，KV 同步仍会成功，接口会返回 `X-Note: github-backup-failed` 供前端提示外部备份异常。
 
 ### 五、本地开发
 ```bash

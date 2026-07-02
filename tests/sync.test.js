@@ -130,6 +130,39 @@ describe("sync route ids", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("surfaces GitHub backup warnings without failing successful pushes", async () => {
+    const dispatchEvent = vi.fn();
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { dispatchEvent },
+    });
+    Object.defineProperty(globalThis, "CustomEvent", {
+      configurable: true,
+      value: class CustomEventMock extends Event {
+        constructor(type, options = {}) {
+          super(type);
+          this.detail = options.detail;
+        }
+      },
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("OK", {
+      status: 200,
+      headers: { "X-Note": "github-backup-failed" },
+    }));
+    state.currentProjectId = "p1";
+    state.syncProjects = [{ id: "p1", syncId: "demo", secret: "secret", itemsData: [] }];
+
+    await expect(pushCurrent()).resolves.toBeUndefined();
+
+    expect(state.syncProjects[0].lastSyncedAt).toEqual(expect.any(Number));
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchEvent.mock.calls[0][0].type).toBe("sync-warning");
+    expect(dispatchEvent.mock.calls[0][0].detail).toMatchObject({
+      note: "github-backup-failed",
+      message: "GitHub 备份失败",
+    });
+  });
+
   it("does not treat 200 sync responses with error notes as successful pushes", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Server Error", {
       status: 200,

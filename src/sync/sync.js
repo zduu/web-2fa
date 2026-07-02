@@ -83,6 +83,7 @@ export async function pushCurrent() {
     body: JSON.stringify(payload)
   });
   throwForSyncErrorResponse(res, "推送");
+  dispatchSyncWarningForResponse(res);
   cur.lastSyncedAt = Date.now();
   // also persist current items into project before saving
   cur.itemsData = (state.items || []).map(it => ({ ...it }));
@@ -135,7 +136,11 @@ export async function pushProject(proj) {
     headers: { "Content-Type": "application/json", ...(token ? { "X-Token": token } : {}) },
     body: JSON.stringify(payload)
   });
-  if (!isSyncErrorResponse(res)) { proj.lastSyncedAt = Date.now(); saveSyncProjects(); }
+  if (!isSyncErrorResponse(res)) {
+    dispatchSyncWarningForResponse(res);
+    proj.lastSyncedAt = Date.now();
+    saveSyncProjects();
+  }
 }
 
 // Delete a sync project on cloud
@@ -165,6 +170,15 @@ function throwForSyncErrorResponse(response, action) {
   const error = newErr(message, "http", response?.status || 0);
   if (note) error.note = note;
   throw error;
+}
+
+function dispatchSyncWarningForResponse(response) {
+  const note = response?.headers?.get?.("X-Note") || "";
+  if (note === "github-backup-config") {
+    dispatchSyncEvent("sync-warning", { note, message: "GitHub 备份配置不完整" });
+  } else if (note === "github-backup-failed") {
+    dispatchSyncEvent("sync-warning", { note, message: "GitHub 备份失败" });
+  }
 }
 
 // ----- auto sync scheduler -----

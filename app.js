@@ -128,6 +128,9 @@ async function init() {
   window.addEventListener("sync-recovered", () => {
     toast("同步已恢复", "ok", 1500);
   });
+  window.addEventListener("sync-warning", (e) => {
+    toast(e.detail?.message || "同步已完成，但外部备份异常", "warn", 2600);
+  });
   window.addEventListener("sync-give-up", () => {
     toast("同步多次失败，已放弃自动重试", "err", 3200);
   });

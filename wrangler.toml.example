@@ -25,6 +25,13 @@ kv_namespaces = [
 # === 分享默认有效期（秒，<=0 表示永久，可选） ===
 # SHARE_TTL = "86400"
 
+# === GitHub 私有仓库外部备份（可选，不设置则不启用） ===
+# Token 建议使用 fine-grained personal access token，仅授权目标仓库 Contents: Read and write
+# GITHUB_BACKUP_TOKEN = "github-token"
+# GITHUB_BACKUP_REPO = "owner/private-repo"
+# GITHUB_BACKUP_BRANCH = "backup"
+# GITHUB_BACKUP_PATH = ".web-2fa-backup/sync/{id}.web2fa-backup.json"
+
 # === 旧版兼容字段（不需要可不设） ===
 # SYNC_TOKEN     = "legacy-token"          # 与 ADMIN_KEY 等价的旧名，二者任一匹配即通过
 # KV_ADMIN_KEY   = "legacy-kv-admin-key"   # 旧的云端浏览专用密钥

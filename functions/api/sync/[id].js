@@ -9,6 +9,7 @@ import {
   isAuthed, needsAuthForRead, needsAuthForWrite, unauthorized,
 } from "../../_lib/auth.js";
 import { normalizeRouteId } from "../../_lib/ids.js";
+import { backupSyncPayloadToGithub, GithubBackupError } from "../../_lib/github-backup.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { normalizeOptionalNonNegativeSafeInteger } from "../../_lib/numbers.js";
 import { isCipherPayload } from "../../_lib/payload.js";
@@ -43,9 +44,10 @@ export async function onRequest(context) {
     if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
     if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse();
     const text = await request.text();
+    let body;
     try {
-      const obj = JSON.parse(text);
-      if (!isCipherPayload(obj)) throw new Error("invalid");
+      body = JSON.parse(text);
+      if (!isCipherPayload(body)) throw new Error("invalid");
     } catch {
       return noStoreResponse("Bad Request", 400);
     }
@@ -64,7 +66,20 @@ export async function onRequest(context) {
     // 写入；同时清掉 tombstone（如果有）
     await env.AUTH_KV.put(key, text, { expirationTtl: 60 * 60 * 24 * 365 });
     try { await env.AUTH_KV.delete(tombKey); } catch {}
-    return new Response("OK", { status: 200, headers: { "Cache-Control": "no-store" } });
+    const headers = { "Cache-Control": "no-store" };
+    try {
+      await backupSyncPayloadToGithub(env, id, body);
+    } catch (error) {
+      if (error instanceof GithubBackupError) {
+        headers["X-Note"] = error.note;
+        headers["X-Backup-Status"] = "failed";
+      } else {
+        console.error("GitHub 备份异常:", error);
+        headers["X-Note"] = "github-backup-failed";
+        headers["X-Backup-Status"] = "failed";
+      }
+    }
+    return new Response("OK", { status: 200, headers });
   }
 
   if (request.method === "DELETE") {
