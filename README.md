@@ -201,7 +201,31 @@ GITHUB_BACKUP_PATH=.web-2fa-backup/sync/{id}.web2fa-backup.json
 
 启用后，每次 `PUT /api/sync/:id` 写入成功，Functions 会把同一份同步密文写到 GitHub 仓库。备份文件内容仍然是客户端用 `Sync Secret` 加密后的密文，GitHub token、`Admin Key` 和 `Sync Secret` 都不会写入备份文件。若未设置 `GITHUB_BACKUP_TOKEN` 和 `GITHUB_BACKUP_REPO`，该逻辑完全不启用。
 
-Token 建议使用 GitHub fine-grained personal access token，只授权目标私有仓库的 `Contents: Read and write` 权限。默认路径里的 `{id}` 会替换为 Sync ID，ID 中的 `/` 会替换为 `-`；如果你固定设置一个不含 `{id}` 的路径，多个同步项目会写入同一个文件。GitHub 写入失败时，KV 同步仍会成功，接口会返回 `X-Note: github-backup-failed` 供前端提示外部备份异常。
+Token 建议使用 GitHub fine-grained personal access token，并按最小权限创建：
+
+- Repository access: 只选择目标备份私有仓库
+- Repository permissions: `Contents` / `Code` 设为 `Read and write`
+- `Metadata: Read-only` 是 GitHub 自动附带权限
+
+不需要授权 `Actions`、`Workflows`、`Administration`、`Secrets`、`Pages`、`Issues`、`Pull requests`、`Deployments`、`Codespaces` 或安全告警等权限。只有备份路径写到 `.github/workflows/` 时才需要 `Workflows: Read and write`，默认路径不需要。若设置 `GITHUB_BACKUP_BRANCH`，该分支必须已存在。
+
+默认路径里的 `{id}` 会替换为 Sync ID，ID 中的 `/` 会替换为 `-`；如果你固定设置一个不含 `{id}` 的路径，多个同步项目会写入同一个文件。GitHub 写入失败时，KV 同步仍会成功，接口会返回 `X-Note: github-backup-failed` 供前端提示外部备份异常。
+
+#### 使用 GitHub 备份文件
+
+备份文件是同步密文副本，不包含 `Sync Secret`、`Admin Key` 或明文验证码。只要还记得原来的 `Sync ID` 和 `Sync Secret`，即使 Cloudflare Pages / KV 不在线，也可以在本地离线解密。
+
+最简单方式：
+
+macOS 双击 `decrypt-github-backup.command`。这个文件是自包含的，可以单独复制到其他目录使用。按提示输入备份文件路径、原来的 `Sync Secret`、输出格式和输出目录即可；备份 JSON 文件可以直接拖进终端窗口来填路径。`Sync Secret` 输入时不会显示，默认读取 `.web-2fa-backup/sync/google.web2fa-backup.json`，默认把明文 JSON 写到 `decrypted-backups/`。
+
+支持的格式：
+
+- `json`：完整明文记录，默认格式
+- `otpauth`：每行一个 `otpauth://` URI，便于导入其他验证器
+- `csv`：表格格式
+
+如果备份文件里的 `syncId` 缺失，脚本会提示你手动输入。解密结果包含真实 2FA Secret，请只在可信设备上执行并妥善保管输出文件。
 
 ### 五、本地开发
 ```bash

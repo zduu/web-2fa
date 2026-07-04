@@ -14,3 +14,5 @@ dist-local/
 # macOS Finder metadata
 **/.DS_Store
 .claude/
+.web-2fa-backup/
+decrypted-backups/
