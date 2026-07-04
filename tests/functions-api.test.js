@@ -225,7 +225,7 @@ describe("Functions API encrypted payload validation", () => {
       owner: "owner",
       repo: "private-backups",
     });
-    expect(renderGithubBackupPath(".web-2fa/{id}.json", "team/demo")).toBe(".web-2fa/team%2Fdemo.json");
+    expect(renderGithubBackupPath(".web-2fa/{id}.json", "team/demo")).toBe(".web-2fa/team-demo.json");
   });
 
   it("accepts current and legacy vault ciphertext shapes", () => {
@@ -392,7 +392,7 @@ describe("Functions API encrypted payload validation", () => {
 
       expect(res.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(String(fetchMock.mock.calls[0][0])).toContain("https://api.github.com/repos/owner/private-backups/contents/.web-2fa-backup/sync/demo%252Fproject.web2fa-backup.json?ref=backup");
+      expect(String(fetchMock.mock.calls[0][0])).toContain("https://api.github.com/repos/owner/private-backups/contents/.web-2fa-backup/sync/demo-project.web2fa-backup.json?ref=backup");
       expect(githubPut.sha).toBeUndefined();
       expect(githubPut.branch).toBe("backup");
       expect(githubPut.message).toContain("demo/project");

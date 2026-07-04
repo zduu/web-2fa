@@ -15,6 +15,7 @@ import {
   normalizeSyncRouteId,
   pullCurrent,
   pushCurrent,
+  pushProject,
   startAutoSync,
   stopAutoSync,
 } from "../src/sync/sync.js";
@@ -128,6 +129,22 @@ describe("sync route ids", () => {
       message: "服务端未绑定 AUTH_KV",
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("surfaces sync errors from project pushes", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Server Error", {
+      status: 200,
+      headers: { "X-Note": "error" },
+    }));
+    const proj = { id: "p1", syncId: "demo", secret: "secret", itemsData: [] };
+
+    await expect(pushProject(proj)).rejects.toMatchObject({
+      code: "http",
+      status: 200,
+      note: "error",
+      message: "推送失败：服务端错误",
+    });
+    expect(proj.lastSyncedAt).toBeUndefined();
   });
 
   it("surfaces GitHub backup warnings without failing successful pushes", async () => {

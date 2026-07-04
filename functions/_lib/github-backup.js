@@ -54,11 +54,11 @@ export function buildGithubBackupDocument(syncId, payload, now = Date.now()) {
 }
 
 export function renderGithubBackupPath(pathTemplate, syncId) {
-  const encodedId = encodeURIComponent(String(syncId || "").trim());
+  const safeId = String(syncId || "").trim().replaceAll("/", "-");
   const rendered = String(pathTemplate || DEFAULT_BACKUP_PATH)
-    .replaceAll("{id}", encodedId)
-    .replaceAll("{syncId}", encodedId);
-  return normalizeBackupPath(rendered) || DEFAULT_BACKUP_PATH.replace("{id}", encodedId);
+    .replaceAll("{id}", safeId)
+    .replaceAll("{syncId}", safeId);
+  return normalizeBackupPath(rendered) || DEFAULT_BACKUP_PATH.replace("{id}", safeId);
 }
 
 export async function backupSyncPayloadToGithub(env, syncId, payload, options = {}) {

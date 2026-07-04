@@ -136,11 +136,10 @@ export async function pushProject(proj) {
     headers: { "Content-Type": "application/json", ...(token ? { "X-Token": token } : {}) },
     body: JSON.stringify(payload)
   });
-  if (!isSyncErrorResponse(res)) {
-    dispatchSyncWarningForResponse(res);
-    proj.lastSyncedAt = Date.now();
-    saveSyncProjects();
-  }
+  throwForSyncErrorResponse(res, "推送");
+  dispatchSyncWarningForResponse(res);
+  proj.lastSyncedAt = Date.now();
+  saveSyncProjects();
 }
 
 // Delete a sync project on cloud

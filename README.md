@@ -201,7 +201,7 @@ GITHUB_BACKUP_PATH=.web-2fa-backup/sync/{id}.web2fa-backup.json
 
 启用后，每次 `PUT /api/sync/:id` 写入成功，Functions 会把同一份同步密文写到 GitHub 仓库。备份文件内容仍然是客户端用 `Sync Secret` 加密后的密文，GitHub token、`Admin Key` 和 `Sync Secret` 都不会写入备份文件。若未设置 `GITHUB_BACKUP_TOKEN` 和 `GITHUB_BACKUP_REPO`，该逻辑完全不启用。
 
-Token 建议使用 GitHub fine-grained personal access token，只授权目标私有仓库的 `Contents: Read and write` 权限。默认路径里的 `{id}` 会替换为 URL 编码后的 Sync ID；如果你固定设置一个不含 `{id}` 的路径，多个同步项目会写入同一个文件。GitHub 写入失败时，KV 同步仍会成功，接口会返回 `X-Note: github-backup-failed` 供前端提示外部备份异常。
+Token 建议使用 GitHub fine-grained personal access token，只授权目标私有仓库的 `Contents: Read and write` 权限。默认路径里的 `{id}` 会替换为 Sync ID，ID 中的 `/` 会替换为 `-`；如果你固定设置一个不含 `{id}` 的路径，多个同步项目会写入同一个文件。GitHub 写入失败时，KV 同步仍会成功，接口会返回 `X-Note: github-backup-failed` 供前端提示外部备份异常。
 
 ### 五、本地开发
 ```bash
