@@ -1,10 +1,11 @@
-const CACHE = '2fa-cache-v12';
+const CACHE = '2fa-cache-v13';
 const ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
   '/app.js',
   '/runtime-config.js',
+  '/theme-bootstrap.js',
   '/shared.html',
   '/shared.js',
   '/manifest.webmanifest',

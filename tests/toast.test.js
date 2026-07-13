@@ -41,6 +41,16 @@ describe("toast utilities", () => {
     expect(escapeHtml(`<tag attr="x">'&</tag>`)).toBe("&lt;tag attr=&quot;x&quot;&gt;&#39;&amp;&lt;/tag&gt;");
   });
 
+  it("escapes quotes identically when a browser DOM is present", () => {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { createElement: vi.fn() },
+    });
+
+    expect(escapeHtml(`x" onfocus="alert(1)'`)).toBe("x&quot; onfocus=&quot;alert(1)&#39;");
+    expect(globalThis.document.createElement).not.toHaveBeenCalled();
+  });
+
   it("copies text through the async clipboard API in secure contexts", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(globalThis, "navigator", {

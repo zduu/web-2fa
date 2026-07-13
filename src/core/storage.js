@@ -604,14 +604,24 @@ export function getCurrentProject() {
 
 // ---------- global token (renamed concept "Admin Key") ----------
 export function loadGlobalToken() {
-  return readLocalStorage(LS_GLOBAL_TOKEN, "");
+  try {
+    const sessionToken = sessionStorage.getItem(LS_GLOBAL_TOKEN) || "";
+    if (sessionToken) return sessionToken;
+  } catch {}
+  const legacyToken = readLocalStorage(LS_GLOBAL_TOKEN, "");
+  if (legacyToken) {
+    try { sessionStorage.setItem(LS_GLOBAL_TOKEN, legacyToken); } catch {}
+    removeLocalStorage(LS_GLOBAL_TOKEN);
+  }
+  return legacyToken;
 }
 
 export function saveGlobalToken(token) {
   try {
-    if (token) localStorage.setItem(LS_GLOBAL_TOKEN, token);
-    else localStorage.removeItem(LS_GLOBAL_TOKEN);
+    if (token) sessionStorage.setItem(LS_GLOBAL_TOKEN, token);
+    else sessionStorage.removeItem(LS_GLOBAL_TOKEN);
   } catch {}
+  removeLocalStorage(LS_GLOBAL_TOKEN);
 }
 
 export function getGlobalToken() {

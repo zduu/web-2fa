@@ -22,7 +22,7 @@ export function createProject({ name, syncId, secret, auto = false, autoInterval
     id: projectId,
     name,
     syncId: syncId || `local-${projectId}`,
-    secret: secret || `local-secret-${Math.random().toString(36).slice(2)}-${Date.now()}`,
+    secret: secret || createLocalSyncSecret(),
     auto,
     autoInterval,
     lastSyncedAt: 0,
@@ -32,6 +32,11 @@ export function createProject({ name, syncId, secret, auto = false, autoInterval
   state.syncProjects.push(newProj);
   saveSyncProjects();
   return newProj;
+}
+
+function createLocalSyncSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return "local-secret-" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export function updateProject(id, patch) {

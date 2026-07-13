@@ -86,17 +86,12 @@ export async function copyText(text) {
 }
 
 export function escapeHtml(str) {
-  if (typeof document === "undefined" || typeof document.createElement !== "function") {
-    return String(str ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-  const div = document.createElement("div");
-  div.textContent = String(str ?? "");
-  return div.innerHTML;
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function downloadBlob(filename, blob) {

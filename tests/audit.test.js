@@ -26,7 +26,7 @@ describe("writeAuditLog", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.123456);
 
     await writeAuditLog(
-      { AUTH_KV: { put } },
+      { AUDIT_IP_SALT: "audit-test-salt", AUTH_KV: { put } },
       {
         url: "https://example.com/api/share/demo?foo=secret&foo=again&token=super-secret",
         method: "DELETE",

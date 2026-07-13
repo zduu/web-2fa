@@ -8,6 +8,7 @@ import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { normalizeNonNegativeInteger, normalizeOptionalTimestamp, normalizePositiveInteger } from "../../_lib/numbers.js";
 import { isCipherPayload } from "../../_lib/payload.js";
+import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 import { parseShareOptions } from "../../_lib/share-options.js";
 
 export async function onRequest(context) {
@@ -87,7 +88,9 @@ export async function onRequest(context) {
   if (request.method === "PUT" || request.method === "POST") {
     if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
     if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse(200);
-    const text = await request.text();
+    let text;
+    try { text = await readRequestText(request, 256 * 1024); }
+    catch (error) { return requestTooLarge(error); }
     let body;
     try {
       body = JSON.parse(text);

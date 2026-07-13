@@ -223,7 +223,8 @@ function normalizeExportTimestamp(value) {
 }
 
 function csvEscape(v) {
-  const s = String(v ?? "");
+  let s = String(v ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
   return s;
 }

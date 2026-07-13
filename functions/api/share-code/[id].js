@@ -1,10 +1,12 @@
 // 分享验证码端点（服务端生成 TOTP，接收方拿不到 secret）
-// GET /api/share-code/<id>?k=<codeKey>
-// 服务端用 codeKey 解密 secret，计算当前 TOTP，只返回验证码和剩余秒数
+// GET /api/share-code/<id>，codeKey 优先通过 X-Share-Code-Key 传递
+// 旧版 ?k=<codeKey> 链接继续兼容；服务端只返回验证码和剩余秒数
 
+import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
 import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { normalizeNonNegativeInteger, normalizeOptionalTimestamp, normalizePositiveInteger } from "../../_lib/numbers.js";
+import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 import { parseShareOptions } from "../../_lib/share-options.js";
 
 // 内联 base32 解码（避免跨模块依赖）
@@ -64,7 +66,7 @@ export async function onRequestGet(context) {
   if (!hasKvMethods(env, ["get", "put", "delete"])) return kvMissingTextResponse(200);
 
   const url = new URL(request.url);
-  const codeKeyB64 = url.searchParams.get("k");
+  const codeKeyB64 = request.headers.get("X-Share-Code-Key") || url.searchParams.get("k");
   if (!codeKeyB64) return noStoreResponse("Missing code key", 400);
 
   const value = await env.AUTH_KV.get(`sharecode:${id}`);
@@ -174,12 +176,15 @@ export async function onRequestGet(context) {
 
 export async function onRequestPut(context) {
   const { request, env, params } = context;
-  // 写入鉴权由 _middleware.js 通过 X-Token 控制
+  const tokenHeader = request.headers.get("X-Token");
+  if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
   const id = normalizeRouteId(params.id);
   if (!id) return noStoreResponse("Missing id", 400);
   if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse(200);
 
-  const text = await request.text();
+  let text;
+  try { text = await readRequestText(request, 256 * 1024); }
+  catch (error) { return requestTooLarge(error); }
   let body;
   try {
     body = JSON.parse(text);

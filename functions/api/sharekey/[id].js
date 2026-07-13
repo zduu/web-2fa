@@ -5,6 +5,7 @@ import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
 import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { normalizeShareKeyPayload } from "../../_lib/share-key.js";
+import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 import { parseOptionalShareTtl } from "../../_lib/share-options.js";
 
 export async function onRequest(context) {
@@ -28,7 +29,9 @@ export async function onRequest(context) {
 
     if (request.method === "PUT" || request.method === "POST") {
       if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse(200);
-      const text = await request.text();
+      let text;
+      try { text = await readRequestText(request, 64 * 1024); }
+      catch (error) { return requestTooLarge(error); }
       let payload;
       try {
         const obj = JSON.parse(text);

@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { b64url } from "../src/core/crypto.js";
-import { getAccessGateState, saveAccessGateConfig } from "../functions/_lib/access-gate.js";
+import {
+  createAccessGateSession,
+  getAccessGateState,
+  revokeAccessGateSession,
+  saveAccessGateConfig,
+  verifyAccessGateSession,
+} from "../functions/_lib/access-gate.js";
 import {
   isAuthed,
   needsAuthForRead,
@@ -196,6 +202,8 @@ describe("Functions API encrypted payload validation", () => {
     expect(normalizeRouteId("")).toBe("");
     expect(normalizeRouteId("demo\nx")).toBe("");
     expect(normalizeRouteId("sync:demo")).toBe("");
+    expect(normalizeRouteId('demo" autofocus onfocus=alert(1)')).toBe("");
+    expect(normalizeRouteId("demo`x")).toBe("");
     expect(normalizeKvSuffix(" share: demo ", "share:")).toBe("demo");
     expect(normalizeKvSuffix("share:share:demo", "share:")).toBe("");
   });
@@ -657,6 +665,42 @@ describe("Functions API encrypted payload validation", () => {
       ttl: 60,
     });
     expect(options).toEqual({ expirationTtl: 60 });
+  });
+
+  it("requires endpoint-level authentication for share-code writes when the access gate is disabled", async () => {
+    const put = vi.fn(async () => {});
+    const res = await onShareCodePutRequest({
+      request: new Request("https://example.com/api/share-code/demo", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ iv: "iv", ct: "ciphertext" }),
+      }),
+      env: { ADMIN_KEY: "secret-token", AUTH_KV: { put } },
+      params: { id: "demo" },
+    });
+
+    expect(res.status).toBe(401);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized encrypted payloads before writing to KV", async () => {
+    const put = vi.fn(async () => {});
+    const res = await onShareCodePutRequest({
+      request: new Request("https://example.com/api/share-code/demo", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(300 * 1024),
+          "X-Token": "secret-token",
+        },
+        body: JSON.stringify({ iv: "iv", ct: "ciphertext" }),
+      }),
+      env: { ADMIN_KEY: "secret-token", AUTH_KV: { put } },
+      params: { id: "demo" },
+    });
+
+    expect(res.status).toBe(413);
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("returns a single safe share code without exposing the secret", async () => {
@@ -1177,6 +1221,26 @@ describe("Functions API encrypted payload validation", () => {
     }
   });
 
+  it("uses revocable random KV sessions for access gate cookies", async () => {
+    const store = new Map([["config:access-gate", JSON.stringify({ version: 1, enabled: true, updatedAt: 1000 })]]);
+    const env = {
+      ACCESS_GATE: "gate-password",
+      GATE_COOKIE_SECRET: "cookie-secret",
+      AUTH_KV: {
+        get: vi.fn(async (key) => store.get(key) || null),
+        put: vi.fn(async (key, value) => { store.set(key, value); }),
+        delete: vi.fn(async (key) => { store.delete(key); }),
+      },
+    };
+    const gate = await getAccessGateState(env);
+    const session = await createAccessGateSession(env, gate);
+
+    expect(session).not.toBe(gate.cookieValue);
+    await expect(verifyAccessGateSession(env, gate, session)).resolves.toBe(true);
+    await revokeAccessGateSession(env, session);
+    await expect(verifyAccessGateSession(env, gate, session)).resolves.toBe(false);
+  });
+
   it("rejects mismatched access gate cookies without caching the response", async () => {
     const res = await onGateGetRequest({
       request: new Request("https://example.com/api/gate", {
@@ -1229,6 +1293,31 @@ describe("Functions API encrypted payload validation", () => {
     }
   });
 
+  it("rate limits repeated access gate password failures by client IP", async () => {
+    const store = new Map();
+    const env = {
+      ACCESS_GATE: "gate-password",
+      AUTH_KV: {
+        get: vi.fn(async (key) => store.get(key) || null),
+        put: vi.fn(async (key, value) => { store.set(key, value); }),
+        delete: vi.fn(async (key) => { store.delete(key); }),
+      },
+    };
+    const attempt = () => onGatePostRequest({
+      request: new Request("https://example.com/api/gate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.9" },
+        body: JSON.stringify({ password: "wrong" }),
+      }),
+      env,
+    });
+
+    for (let i = 0; i < 5; i++) expect((await attempt()).status).toBe(401);
+    const limited = await attempt();
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
   it("trims access gate login passwords before verification", async () => {
     const res = await onGatePostRequest({
       request: new Request("https://example.com/api/gate", {
@@ -1250,7 +1339,7 @@ describe("Functions API encrypted payload validation", () => {
     expect(res.headers.get("Set-Cookie")).toContain("cf_gate=");
   });
 
-  it("reports normalized share ttl in health checks", async () => {
+  it("keeps public health checks minimal", async () => {
     const res = await onHealthRequest({
       env: {
         AUTH_KV: { get: vi.fn(async () => null), put: vi.fn(async () => {}) },
@@ -1260,28 +1349,11 @@ describe("Functions API encrypted payload validation", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      shareTtl: 60,
-      sharePermanentByDefault: false,
-    });
-  });
-
-  it("reports normalized auth configuration in health checks", async () => {
-    const res = await onHealthRequest({
-      env: {
-        AUTH_KV: { get: vi.fn(async () => null), put: vi.fn(async () => {}) },
-        ADMIN_KEY: "   ",
-        SYNC_TOKEN: "",
-        SYNC_MODE: " open ",
-      },
-    });
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      ok: true,
-      adminConfigured: false,
-      syncMode: "open",
-    });
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: true, kv: "ok", serverTime: expect.any(String) });
+    expect(body).not.toHaveProperty("adminConfigured");
+    expect(body).not.toHaveProperty("syncMode");
+    expect(body).not.toHaveProperty("accessGate");
   });
 
   it("lists both full share records and safe share-code records", async () => {

@@ -5,21 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>共享验证码</title>
   <meta name="theme-color" content="#0a0d12">
-  <script>
-    (() => {
-      try {
-        const pref = localStorage.getItem("authenticator.v1.theme");
-        const theme = pref === "light" || pref === "auto" ? pref : "dark";
-        const resolved = theme === "auto" && window.matchMedia
-          ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-          : theme;
-        document.documentElement.dataset.theme = theme;
-        document.documentElement.dataset.themeResolved = resolved;
-        document.documentElement.style.colorScheme = resolved;
-        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "light" ? "#f4f7fb" : "#0a0d12");
-      } catch {}
-    })();
-  </script>
+  <script src="theme-bootstrap.js"></script>
   <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
   <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
@@ -89,7 +75,7 @@
       <div class="logo">2F</div>
       <div>
         <h1>共享验证码</h1>
-        <div class="sub">端到端加密 · 链接有效期内可用</div>
+        <div class="sub">链接有效期内可用</div>
       </div>
     </div>
 

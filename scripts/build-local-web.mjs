@@ -17,6 +17,7 @@ const files = [
   "styles.css",
   "manifest.webmanifest",
   "runtime-config.js",
+  "theme-bootstrap.js",
 ];
 
 const dirs = ["assets", "src"];

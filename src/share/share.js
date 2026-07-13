@@ -97,11 +97,11 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
     }
   }
 
-  // Admin convenience: store share recovery material by default so any
-  // ADMIN_KEY-authenticated device can copy the matching link later.
+  // Explicit opt-in only: server-side recovery material weakens the zero-knowledge
+  // property of unprotected shares, so omission must mean "do not store".
   let recoveryStored = false;
   try {
-    if (token && meta.storeKey !== false) {
+    if (token && meta.storeKey === true) {
       const createdAt = normalizeOptionalTimestamp(meta.createdAt) || Date.now();
       const keyRes = await fetch(apiUrl(`/api/sharekey/${encodeURIComponent(sid)}${qs}`), {
         method: "PUT",
@@ -130,7 +130,7 @@ export async function createShareLink(item, ttlSeconds = null, meta = {}) {
 }
 
 // Share an item that is currently visible (handles both single-project and "_all_" view)
-export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "", storeKey = true, showSecret = false) {
+export async function shareItem(item, ttlSeconds, note = "", maxAccess = 0, password = "", storeKey = false, showSecret = false) {
   const isAll = state.currentProjectId === "_all_";
   const target = isAll
     ? findItemInProject(item._projectId, item.id)

@@ -616,6 +616,7 @@ function renderDataPane(pane) {
           <span class="tag ${isLocked ? "warn" : (hasMaster ? "ok" : "")}">${isLocked ? "已加密未解锁" : (hasMaster ? "已加密" : "未加密")}</span>
         </div>
         <p class="hint">设置后，本地存储将使用 AES-GCM + PBKDF2 加密。<strong>忘记主密码可用恢复码（如已生成）找回。</strong></p>
+        ${!hasMaster ? '<div class="section-card warn"><strong>当前本地数据未加密。</strong><div class="hint mt-2">TOTP Secret 会以明文保存在此浏览器中，自动锁定也无法隐藏这些未加密数据。建议设置主密码。</div></div>' : ""}
         <div class="btn-row">
           ${isLocked
             ? `<button class="btn" data-act="unlock">🔓 输入密码解锁</button>

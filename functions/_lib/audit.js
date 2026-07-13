@@ -12,7 +12,7 @@ export async function writeAuditLog(env, request, response) {
     method: request.method,
     path: compactPath(request.url),
     status: normalizeHttpStatus(response?.status),
-    ipSummary: await summarizeIp(request.headers.get("CF-Connecting-IP")),
+    ipSummary: await summarizeIp(request.headers.get("CF-Connecting-IP"), getAuditSalt(env)),
     uaSample: sanitizeUserAgent(request.headers.get("User-Agent")),
   });
   try {
@@ -44,12 +44,20 @@ function compactPath(rawUrl) {
   }
 }
 
-async function summarizeIp(ip) {
+async function summarizeIp(ip, salt) {
   const text = String(ip || "").trim();
-  if (!text) return "";
-  const data = new TextEncoder().encode(text);
+  if (!text || !salt) return "";
+  const data = new TextEncoder().encode(`${salt}:${text}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return Array.from(digest.slice(0, 6)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function getAuditSalt(env) {
+  const candidates = [env?.AUDIT_IP_SALT, env?.ADMIN_KEY, env?.SYNC_TOKEN];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
 }
 
 function sanitizeUserAgent(value) {

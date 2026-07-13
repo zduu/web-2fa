@@ -67,7 +67,10 @@ function startCodeModeView(sid, codeKey) {
 
   async function fetchCode() {
     try {
-      const res = await fetch(apiUrl(`/api/share-code/${encodeURIComponent(sid)}?k=${encodeURIComponent(codeKey)}`));
+      const res = await fetch(apiUrl(`/api/share-code/${encodeURIComponent(sid)}`), {
+        headers: { "X-Share-Code-Key": codeKey },
+        cache: "no-store",
+      });
       if (res.status === 410) { stopTicker(); setLabel("分享已失效"); return null; }
       if (res.status === 404) { stopTicker(); setLabel("分享不存在或已过期"); return null; }
       if (!res.ok) { stopTicker(); setLabel("加载失败"); return null; }

@@ -38,6 +38,19 @@ function installLocalStorage() {
   });
 }
 
+function installSessionStorage() {
+  const store = new Map();
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) => store.has(key) ? store.get(key) : null,
+      setItem: (key, value) => { store.set(key, String(value)); },
+      removeItem: (key) => { store.delete(key); },
+      clear: () => { store.clear(); },
+    },
+  });
+}
+
 function installBlockedLocalStorage() {
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -66,12 +79,14 @@ function resetState() {
 
 beforeEach(() => {
   installLocalStorage();
+  installSessionStorage();
   resetState();
 });
 
 afterEach(() => {
   resetState();
   delete globalThis.localStorage;
+  delete globalThis.sessionStorage;
 });
 
 describe("ensureItemDefaults", () => {
@@ -186,6 +201,19 @@ describe("mergeShareRefs", () => {
 });
 
 describe("encrypted sync project storage", () => {
+  it("stores the Admin Key only for the current browser session and migrates legacy localStorage", () => {
+    saveGlobalToken("admin-token");
+    expect(sessionStorage.getItem("authenticator.v1.globalToken")).toBe("admin-token");
+    expect(localStorage.getItem("authenticator.v1.globalToken")).toBeNull();
+    expect(loadGlobalToken()).toBe("admin-token");
+
+    sessionStorage.clear();
+    localStorage.setItem("authenticator.v1.globalToken", "legacy-token");
+    expect(loadGlobalToken()).toBe("legacy-token");
+    expect(sessionStorage.getItem("authenticator.v1.globalToken")).toBe("legacy-token");
+    expect(localStorage.getItem("authenticator.v1.globalToken")).toBeNull();
+  });
+
   it("uses safe defaults when localStorage reads are blocked during startup", async () => {
     installBlockedLocalStorage();
     state.items = [{ id: "stale", secret: "OLDSECRET" }];
@@ -314,6 +342,11 @@ describe("encrypted sync project storage", () => {
       autoInterval: 30000,
       lastSyncedAt: 0,
     });
+  });
+
+  it("generates local project sync secrets from cryptographic randomness", () => {
+    const project = createProject({ name: "Local" });
+    expect(project.secret).toMatch(/^local-secret-[0-9a-f]{48}$/);
   });
 
   it("normalizes stored KDF iteration counts before unlock", async () => {

@@ -19,7 +19,11 @@ export function normalizeKvSuffix(name, prefix = "") {
 export function normalizeRouteId(value) {
   const id = String(value || "").trim();
   if (!id) return "";
+  if (id.length > 180) return "";
   if (/[\x00-\x1F\x7F]/.test(id)) return "";
+  // Route ids are later displayed in administrator HTML. Reject characters that
+  // can escape quoted attributes even if a future renderer forgets to encode.
+  if (/["'`<>=\\]/.test(id)) return "";
   if (RESERVED_KV_PREFIXES.some((prefix) => id.startsWith(prefix))) return "";
   return id;
 }

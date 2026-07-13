@@ -4,7 +4,9 @@ import { normalizeOptionalTimestamp, normalizePositiveInteger } from "./numbers.
 export const ACCESS_GATE_COOKIE = "cf_gate";
 
 const ACCESS_GATE_KV_KEY = "config:access-gate";
+const ACCESS_GATE_SESSION_PREFIX = "gatesession:";
 const ACCESS_GATE_CACHE_TTL_MS = 5000;
+const ACCESS_GATE_SESSION_TTL_SECONDS = 7 * 24 * 3600;
 
 let runtimeGateCache = {
   expiresAt: 0,
@@ -52,6 +54,33 @@ export function buildAccessGateClearCookie() {
 export function readAccessGateCookie(request) {
   const cookie = request.headers.get("Cookie") || "";
   return parseCookie(cookie).get(ACCESS_GATE_COOKIE) || "";
+}
+
+export async function createAccessGateSession(env, gate) {
+  if (!env?.AUTH_KV?.put) return gate.cookieValue;
+  const token = randomToken();
+  const key = await accessGateSessionKey(token);
+  await env.AUTH_KV.put(key, JSON.stringify({ tag: gate.cookieValue }), {
+    expirationTtl: ACCESS_GATE_SESSION_TTL_SECONDS,
+  });
+  return token;
+}
+
+export async function verifyAccessGateSession(env, gate, token) {
+  if (!token) return false;
+  if (!env?.AUTH_KV?.get) return timingSafeEqualString(token, gate.cookieValue);
+  let raw;
+  try { raw = await env.AUTH_KV.get(await accessGateSessionKey(token)); }
+  catch { return false; }
+  if (!raw) return false;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return false; }
+  return timingSafeEqualString(parsed?.tag, gate.cookieValue);
+}
+
+export async function revokeAccessGateSession(env, token) {
+  if (!token || !env?.AUTH_KV?.delete) return;
+  try { await env.AUTH_KV.delete(await accessGateSessionKey(token)); } catch {}
 }
 
 function hasGateConfigStore(env) {
@@ -150,13 +179,26 @@ async function runtimeToState(env, runtime) {
     editable: hasGateConfigStore(env),
     passwordConfigured,
     updatedAt: normalizeOptionalTimestamp(runtime?.updatedAt),
-    cookieValue: await cookieTagFor(configuredPassword),
+    cookieValue: await cookieTagFor(
+      configuredPassword,
+      getGateCookieSecret(env),
+      normalizeOptionalTimestamp(runtime?.updatedAt) || 0,
+    ),
     verifyPassword: async (password) => timingSafeEqualString(normalizeGatePasswordInput(password), configuredPassword),
   };
 }
 
-async function cookieTagFor(password) {
-  return await sha256b64url(`gate-cookie:${password}`);
+async function cookieTagFor(password, secret, generation) {
+  return await sha256b64url(`gate-cookie:v2:${secret}:${generation}:${password}`);
+}
+
+async function accessGateSessionKey(token) {
+  return `${ACCESS_GATE_SESSION_PREFIX}${await sha256b64url(`session:${token}`)}`;
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return bytesToB64url(bytes);
 }
 
 async function sha256b64url(text) {
@@ -188,6 +230,14 @@ function bytesToB64url(bytes) {
 function getConfiguredGatePassword(env) {
   const raw = typeof env.ACCESS_GATE === "string" ? env.ACCESS_GATE : "";
   return raw.trim();
+}
+
+function getGateCookieSecret(env) {
+  const candidates = [env.GATE_COOKIE_SECRET, env.ADMIN_KEY, env.SYNC_TOKEN, env.KV_ADMIN_KEY];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "no-server-secret";
 }
 
 function normalizeGatePasswordInput(value) {

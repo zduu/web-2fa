@@ -5,6 +5,7 @@ import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
 import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { isVaultPayload } from "../../_lib/payload.js";
+import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 
 export async function onRequest(context) {
   const { request, env, params } = context;
@@ -25,7 +26,9 @@ export async function onRequest(context) {
 
     if (request.method === "PUT" || request.method === "POST") {
       if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse(200);
-      const text = await request.text();
+      let text;
+      try { text = await readRequestText(request, 512 * 1024); }
+      catch (error) { return requestTooLarge(error); }
       try {
         const body = JSON.parse(text);
         if (!isVaultPayload(body)) throw new Error("invalid");

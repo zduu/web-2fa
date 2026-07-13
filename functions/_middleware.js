@@ -5,8 +5,8 @@
 //   /api/share、/api/share-code 写入、/api/sharekey、/api/vault、/api/sync* 允许 ADMIN_KEY/SYNC_TOKEN 直通；
 //   /api/admin/* 允许 ADMIN_KEY/SYNC_TOKEN/KV_ADMIN_KEY 直通
 
-import { isAdminAuthed, isAuthed, timingSafeEqualString } from "./_lib/auth.js";
-import { getAccessGateState, readAccessGateCookie } from "./_lib/access-gate.js";
+import { isAdminAuthed, isAuthed } from "./_lib/auth.js";
+import { getAccessGateState, readAccessGateCookie, verifyAccessGateSession } from "./_lib/access-gate.js";
 import { shouldAuditRequest, writeAuditLog } from "./_lib/audit.js";
 
 export const onRequest = async (ctx) => {
@@ -53,7 +53,7 @@ export const onRequest = async (ctx) => {
   }
 
   const got = readAccessGateCookie(request);
-  const hasCookie = !!(got && timingSafeEqualString(got, gate.cookieValue));
+  const hasCookie = await verifyAccessGateSession(env, gate, got);
   const tokenHeader = request.headers.get("X-Token");
   const hasAdminToken = isAuthed(env, tokenHeader);
   const hasAdminApiToken = isAdminAuthed(env, request);
@@ -115,7 +115,8 @@ function withCors(request, env, response) {
     headers.set("Vary", appendVary(headers.get("Vary"), "Origin"));
   }
   headers.set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,DELETE,OPTIONS");
-  headers.set("Access-Control-Allow-Headers", "Content-Type, X-Token, X-KV-Admin-Key, Cache-Control");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, X-Token, X-KV-Admin-Key, X-Share-Code-Key, Cache-Control");
+  headers.set("Access-Control-Expose-Headers", "X-Note, X-Access-Remaining, X-Backup-Status, X-Share-Reason, X-Gate");
   headers.set("Access-Control-Max-Age", "86400");
   return new Response(response.body, {
     status: response.status,

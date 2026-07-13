@@ -405,7 +405,7 @@ async function handleShare(item) {
   const choice = await chooseTtl();
   if (!choice || choice.cancel) return;
   try {
-    const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "", true, choice.showSecret || false);
+    const r = await shareItem(item, choice.ttl, choice.note || "", choice.maxAccess || 0, choice.password || "", choice.storeKey === true, choice.showSecret || false);
     const copied = await copyText(r.link);
     await showShareLinkDialog({
       label: formatItemName(item) || "分享",
@@ -482,7 +482,7 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
         if (ttl === "perm" || ttl === 0) parts.push("永久有效（高风险）");
         else if (expiresAt) parts.push(`剩余 ${formatShareCountdown(expiresAt - Date.now())}`);
         else parts.push("按服务端默认有效期");
-        if (maxAccess > 0) parts.push(`最多 ${maxAccess} 次访问`);
+        if (maxAccess > 0) parts.push(showSecret ? `最多 ${maxAccess} 次访问（尽力限制）` : `首个验证码窗口内最多 ${maxAccess} 次访问（尽力限制）`);
         if (requiresPassword) parts.push("需访问口令");
         if (recoveryStored === false) parts.push("其他管理员设备无法重新复制完整链接");
         if (expiry) expiry.textContent = parts.join(" · ");
@@ -609,10 +609,10 @@ function chooseTtl() {
           <label class="row gap-2"><input type="radio" name="ttl" value="3600" /> <span>1 小时</span></label>
           <label class="row gap-2"><input type="radio" name="ttl" value="86400" /> <span>24 小时</span></label>
           <label class="row gap-2"><input type="radio" name="ttl" value="perm" /> <span>永久（高风险，不推荐）</span></label>
-          <div class="field mt-2">
+          <div class="field mt-2" id="share-max-field">
             <label>最多访问次数 <span class="muted">（留空或 0 = 不限）</span></label>
             <input id="share-max" class="input" type="number" min="0" step="1" inputmode="numeric" placeholder="例如：1 / 3 / 10" />
-            <div class="hint">留空或填 0 表示不限；填 1 表示一次性，访问后立即失效。</div>
+            <div class="hint" id="share-max-hint">安全模式仅在首个验证码窗口内有效；访问次数受 KV 并发限制影响，属于尽力限制。</div>
           </div>
           <div class="field mt-2">
             <label>备注 <span class="muted">（可选，最多 280 字，对方页面可见）</span></label>
@@ -633,7 +633,15 @@ function chooseTtl() {
               </div>
             </label>
           </div>
-          <div class="hint mt-2">管理员分享记录会保存链接恢复材料，其他已登录管理员设备可在分享页重新复制完整链接。</div>
+          <div class="section-card" style="margin-top:12px;">
+            <label class="row gap-2">
+              <input type="checkbox" id="share-store-key" />
+              <div>
+                <div class="text-sm" style="font-weight:600;">在服务端保存链接恢复材料</div>
+                <div class="hint">默认关闭。开启后其他管理员设备可重新复制链接；无口令分享会使服务端管理员具备解密能力。</div>
+              </div>
+            </label>
+          </div>
         </div>
       `,
       footerHtml: `
@@ -643,6 +651,13 @@ function chooseTtl() {
         </div>
       `,
       onMount: (r, doClose) => {
+        const showSecretInput = r.querySelector('#share-show-secret');
+        const maxHint = r.querySelector('#share-max-hint');
+        showSecretInput?.addEventListener("change", () => {
+          if (maxHint) maxHint.textContent = showSecretInput.checked
+            ? "访问次数由 Cloudflare KV 尽力限制；并发请求可能超过设定次数。"
+            : "安全模式仅在首个验证码窗口内有效；访问次数受 KV 并发限制影响，属于尽力限制。";
+        });
         r.querySelector('[data-act="cancel"]').addEventListener("click", () => { doClose(); resolve({ cancel: true }); });
         r.querySelector('[data-act="ok"]').addEventListener("click", async () => {
           const v = r.querySelector('input[name="ttl"]:checked')?.value || "default";
@@ -652,6 +667,7 @@ function chooseTtl() {
           const maxAccess = Number.isFinite(maxParsed) ? Math.min(1_000_000, Math.max(0, maxParsed)) : 0;
           const password = (r.querySelector("#share-passcode")?.value || "").trim();
           const showSecret = r.querySelector('#share-show-secret')?.checked === true;
+          const storeKey = r.querySelector('#share-store-key')?.checked === true;
           if (v === "perm") {
             const ok = await confirmDialog({
               title: "确认永久分享？",
@@ -663,7 +679,7 @@ function chooseTtl() {
           }
           doClose();
           const ttl = v === "default" ? null : (v === "perm" ? "perm" : Number(v));
-          resolve({ ttl, note, maxAccess, password, showSecret });
+          resolve({ ttl, note, maxAccess, password, showSecret, storeKey });
         });
       }
     });

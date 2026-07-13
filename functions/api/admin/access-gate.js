@@ -2,10 +2,12 @@ import { isAdminAuthed } from "../../_lib/auth.js";
 import {
   buildAccessGateClearCookie,
   buildAccessGateCookie,
+  createAccessGateSession,
   getAccessGateState,
   saveAccessGateConfig,
 } from "../../_lib/access-gate.js";
 import { hasKvMethods, kvMissingJsonResponse } from "../../_lib/kv.js";
+import { readRequestJson, requestTooLarge } from "../../_lib/request-body.js";
 
 export async function onRequestGet(context) {
   const { env, request } = context;
@@ -32,10 +34,10 @@ export async function onRequestPut(context) {
   }
 
   let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ success: false, error: "Bad Request" }, 400);
+  try { body = await readRequestJson(request, 4096); }
+  catch (error) {
+    try { return requestTooLarge(error); }
+    catch { return json({ success: false, error: "Bad Request" }, 400); }
   }
 
   if (!hasKvMethods(env, ["get", "put"])) {
@@ -54,7 +56,8 @@ export async function onRequestPut(context) {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
   });
-  headers.set("Set-Cookie", gate.enabled ? buildAccessGateCookie(gate.cookieValue) : buildAccessGateClearCookie());
+  const session = gate.enabled ? await createAccessGateSession(env, gate) : "";
+  headers.set("Set-Cookie", gate.enabled ? buildAccessGateCookie(session) : buildAccessGateClearCookie());
 
   return new Response(JSON.stringify({
     success: true,

@@ -13,6 +13,7 @@ import { backupSyncPayloadToGithub, GithubBackupError } from "../../_lib/github-
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
 import { normalizeOptionalNonNegativeSafeInteger } from "../../_lib/numbers.js";
 import { isCipherPayload } from "../../_lib/payload.js";
+import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 
 const BACKUP_KEEP = 5;
 const BACKUP_TTL = 60 * 60 * 24 * 30; // 30 天
@@ -43,7 +44,9 @@ export async function onRequest(context) {
   if (request.method === "PUT" || request.method === "POST") {
     if (needsAuthForWrite(env) && !isAuthed(env, tokenHeader)) return unauthorized();
     if (!hasKvMethods(env, ["put"])) return kvMissingTextResponse();
-    const text = await request.text();
+    let text;
+    try { text = await readRequestText(request, 1024 * 1024); }
+    catch (error) { return requestTooLarge(error); }
     let body;
     try {
       body = JSON.parse(text);

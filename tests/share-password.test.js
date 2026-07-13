@@ -84,7 +84,7 @@ describe("share password protection", () => {
       .rejects.toThrow("invalid-bundle");
   });
 
-  it("stores share decrypt material by default for admin cross-device convenience", async () => {
+  it("stores unprotected share decrypt material only after explicit opt-in", async () => {
     state.globalToken = "admin-token";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("OK", { status: 200 }));
 
@@ -94,7 +94,7 @@ describe("share password protection", () => {
       secret: "JBSWY3DP",
       issuer: " GitHub ",
       account: " me@example.com ",
-    }, null, { projectName: " Work ", itemId: " item-1 " });
+    }, null, { projectName: " Work ", itemId: " item-1 ", storeKey: true });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toContain("/api/share-code/");
@@ -124,7 +124,7 @@ describe("share password protection", () => {
       secret: "JBSWY3DP",
       issuer: "GitHub",
       account: "me@example.com",
-    }, "60.9", { maxAccess: "1000000000", createdAt: "1e999" });
+    }, "60.9", { maxAccess: "1000000000", createdAt: "1e999", storeKey: true });
 
     expect(fetchMock.mock.calls[0][0]).toContain("ttl=60");
     expect(fetchMock.mock.calls[0][0]).toContain("max=1000000");
@@ -223,7 +223,7 @@ describe("share password protection", () => {
     })).toBe(true);
   });
 
-  it("can explicitly opt out of server-side share key storage", async () => {
+  it("does not store server-side share key material when storeKey is omitted", async () => {
     state.globalToken = "admin-token";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("OK", { status: 200 }));
 
@@ -233,7 +233,7 @@ describe("share password protection", () => {
       secret: "JBSWY3DP",
       issuer: "GitHub",
       account: "me@example.com",
-    }, null, { storeKey: false });
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toContain("/api/share-code/");
@@ -255,7 +255,7 @@ describe("share password protection", () => {
       secret: "JBSWY3DP",
       issuer: "GitHub",
       account: "me@example.com",
-    });
+    }, null, { storeKey: true });
 
     expect(result.link).toContain("/shared.html?sid=");
     expect(result.recoveryStored).toBe(false);

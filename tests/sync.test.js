@@ -664,6 +664,17 @@ describe("buildDecryptedExportFiles", () => {
       "",
     ].join("\n"));
   });
+
+  it("neutralizes spreadsheet formula prefixes in CSV exports", async () => {
+    const [file] = buildDecryptedExportFiles({
+      items: [{ issuer: "=HYPERLINK(\"https://example.com\")", account: "+cmd", secret: "JBSWY3DP" }],
+      format: "csv",
+      ts: 1000,
+    });
+    const csv = await file.blob.text();
+    expect(csv).toContain("\"'=HYPERLINK(\"\"https://example.com\"\")\"");
+    expect(csv).toContain("'+cmd");
+  });
 });
 
 describe("cloud project decryptability", () => {

@@ -22,7 +22,7 @@
 - 🔒 **分享仅管理员可用**：普通用户不显示分享入口，管理员可统一查看全部分享记录与访问日志
 - 📱 **分享支持离线 QR**：生成链接后会弹出二维码、链接和有效期提示，手机扫码更直接
 - 🔐 **分享口令可选**：可额外设置接收方访问口令；不设置时仍可直接通过链接访问
-- 🧰 **管理员分享互通**：管理员生成分享后会保存链接恢复材料，其他已登录管理员设备可在分享页重新复制完整链接
+- 🧰 **可选管理员分享互通**：生成分享时可显式保存链接恢复材料；默认关闭，避免服务端同时持有密文与解密材料
 - 🔳 **支持批量迁移二维码导出**：当前项目可直接导出为 `otpauth-migration://` 多张二维码，便于迁移到 Google Authenticator 等应用
 - 🧾 **管理员审计日志**：所有 API 写操作会记录最近 30 天的 method/path/status/IP 摘要/UA 摘要
 - 📷 **导入更完整**：支持手动输入、`otpauth://`、`otpauth-migration://`、Aegis 明文 JSON、Bitwarden CSV/JSON、andOTP 加密备份
@@ -173,6 +173,9 @@ Pages 项目 → Settings → Functions → KV Bindings：变量名 `AUTH_KV` �
 | `ADMIN_KEY` | 推荐 | **管理员主密钥**。一个值搞定：同步写入鉴权、云端浏览鉴权、分享写入鉴权 |
 | `SYNC_MODE` | 可选 | `strict`（默认）/ `open`。strict 下读取也需要 ADMIN_KEY，普通访客无法下载任何同步密文 |
 | `ACCESS_GATE` | 可选 | 全站访问口令内容（独立于 ADMIN_KEY）。管理员页只控制是否启用，口令值始终来自这里 |
+| `GATE_COOKIE_SECRET` | 推荐 | 访问门 cookie 标签的服务端随机盐；未设置时回退使用 ADMIN_KEY |
+| `GATE_RATE_LIMIT_SALT` | 可选 | 访问门限流键的哈希盐；未设置时回退使用 ADMIN_KEY/ACCESS_GATE |
+| `AUDIT_IP_SALT` | 可选 | 审计 IP 摘要的哈希盐；未设置时回退使用 ADMIN_KEY，均未配置时不记录 IP 摘要 |
 | `SHARE_TTL` | 可选 | 分享默认有效期（秒，<=0 表示永久） |
 | `SYNC_TOKEN` | 兼容 | 旧版别名，等价于 ADMIN_KEY |
 | `KV_ADMIN_KEY` | 兼容 | 旧版别名，等价于 ADMIN_KEY（云端浏览专用） |
@@ -260,6 +263,13 @@ npm run dev:https                        # 推荐 HTTPS（摄像头/剪贴板需
 1. **写入永远要鉴权**（ADMIN_KEY）—— 即使知道你的 Sync ID，没 Admin Key 也无法覆盖
 2. **strict 读取也鉴权** —— 普通访客根本拿不到任何 KV 密文
 3. **Sync Secret 端到端加密** —— 即便密文泄露，没 Sync Secret 也解不开
+
+分享说明：
+
+- 完整模式由接收方浏览器解密，属于端到端加密；接收方可以查看 Secret。
+- 默认安全模式由服务端短暂解密并计算当前验证码，接收方拿不到 Secret，但服务端并非零知识。
+- “最多访问次数”基于 Cloudflare KV 读改写，只是尽力限制；并发请求可能超过设定次数，不能视为强一次性保证。
+- 链接恢复材料默认不保存。显式开启后，无口令分享的服务端管理员可恢复解密密钥。
 
 ---
 
