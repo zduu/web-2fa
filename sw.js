@@ -1,4 +1,4 @@
-const CACHE = '2fa-cache-v13';
+const CACHE = '2fa-cache-v15';
 const ASSETS = [
   '/',
   '/index.html',
@@ -42,6 +42,7 @@ const ASSETS = [
 
   // src/share
   '/src/share/share.js',
+  '/src/share/code-view.js',
 
   // src/ui
   '/src/ui/home.js',

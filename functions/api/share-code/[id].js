@@ -5,7 +5,7 @@
 import { isAuthed, needsAuthForWrite, unauthorized } from "../../_lib/auth.js";
 import { normalizeRouteId } from "../../_lib/ids.js";
 import { hasKvMethods, kvMissingTextResponse } from "../../_lib/kv.js";
-import { normalizeNonNegativeInteger, normalizeOptionalTimestamp, normalizePositiveInteger } from "../../_lib/numbers.js";
+import { normalizeNonNegativeInteger, normalizeOptionalTimestamp } from "../../_lib/numbers.js";
 import { readRequestText, requestTooLarge } from "../../_lib/request-body.js";
 import { parseShareOptions } from "../../_lib/share-options.js";
 
@@ -59,6 +59,7 @@ async function hotp(secretBytes, counter, algo, digits) {
 }
 
 export async function onRequestGet(context) {
+  const requestStartedAt = Date.now();
   const { request, env, params } = context;
   const id = normalizeRouteId(params.id);
   if (!id) return noStoreResponse("Missing id", 400);
@@ -113,18 +114,13 @@ export async function onRequestGet(context) {
   const algo = algorithm === "SHA256" ? "SHA-256" : algorithm === "SHA512" ? "SHA-512" : "SHA-1";
   const digits = Math.min(10, Math.max(4, Math.trunc(Number(secretData.digits)) || 6));
   const period = Math.max(5, Math.trunc(Number(secretData.period)) || 30);
-  const step = Math.floor(Date.now() / 1000 / period);
-  const secondsLeft = period - (Math.floor(Date.now() / 1000) % period);
-  const issuedStep = normalizePositiveInteger(codePayload.issuedStep);
-  if (issuedStep !== null && issuedStep !== step) {
-    try { await cleanupShareCode(env, id, { strictPrimary: true }); }
-    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
-    return noStoreResponse("Gone", 410, { "X-Share-Reason": "code-window-expired" });
-  }
+  let step = Math.floor(Date.now() / 1000 / period);
 
+  let secretBytes;
   let code;
   try {
-    code = await hotp(base32Decode(secretData.secret), step, algo, digits);
+    secretBytes = base32Decode(secretData.secret);
+    code = await hotp(secretBytes, step, algo, digits);
   } catch {
     return noStoreResponse("Server Error", 500, { "X-Note": "error" });
   }
@@ -146,7 +142,7 @@ export async function onRequestGet(context) {
       try { await writeShareStat(env, id, stat, expireAt); } catch {}
       await cleanupShareCode(env, id, { strictPrimary: true });
     } else {
-      const next = { ...codePayload, count: nextCount, issuedStep: step, lastAccessAt: now };
+      const next = { ...codePayload, count: nextCount, lastAccessAt: now };
       if (ttl > 0) {
         const remain = expireAt ? Math.max(60, Math.floor((expireAt - Date.now()) / 1000)) : ttl;
         await env.AUTH_KV.put(`sharecode:${id}`, JSON.stringify(next), { expirationTtl: remain });
@@ -160,9 +156,27 @@ export async function onRequestGet(context) {
     return noStoreResponse("Server Error", 500, { "X-Note": "error" });
   }
 
+  // KV writes can cross a TOTP boundary. Return the code for the current window.
+  const latestStep = Math.floor(Date.now() / 1000 / period);
+  if (latestStep !== step) {
+    step = latestStep;
+    try { code = await hotp(secretBytes, step, algo, digits); }
+    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
+  }
+  const responseTime = Date.now();
+  if (expireAt && expireAt <= responseTime) {
+    try { await cleanupShareCode(env, id, { strictPrimary: true }); }
+    catch { return noStoreResponse("Server Error", 500, { "X-Note": "error" }); }
+    return noStoreResponse("Gone", 410, { "X-Share-Reason": "expired" });
+  }
+  // The browser anchors validForMs to its request start, so include server work
+  // exactly once. secondsLeft remains relative to response time for old clients.
+  const codeExpiresAt = Math.min((step + 1) * period * 1000, expireAt || Infinity);
+  const validForMs = Math.max(0, codeExpiresAt - requestStartedAt);
   return new Response(JSON.stringify({
     code,
-    secondsLeft,
+    secondsLeft: Math.max(0, Math.ceil((codeExpiresAt - responseTime) / 1000)),
+    validForMs,
     digits,
     algorithm: secretData.algorithm || "SHA1",
     period,

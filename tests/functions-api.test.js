@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { b64url } from "../src/core/crypto.js";
+import { totp } from "../src/core/totp.js";
 import {
   createAccessGateSession,
   getAccessGateState,
@@ -703,7 +704,7 @@ describe("Functions API encrypted payload validation", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
-  it("returns a single safe share code without exposing the secret", async () => {
+  it("returns a safe share code without exposing the secret", async () => {
     const encrypted = await encryptSharePayload({
       type: "totp",
       secret: "JBSWY3DP",
@@ -750,36 +751,175 @@ describe("Functions API encrypted payload validation", () => {
     const shareCodeWrite = put.mock.calls.find(([key]) => key === "sharecode:demo");
     expect(JSON.parse(shareCodeWrite[1])).toMatchObject({
       count: 1,
-      issuedStep: expect.any(Number),
+      lastAccessAt: expect.any(Number),
     });
   });
 
-  it("expires safe share codes after their first TOTP window", async () => {
-    const encrypted = await encryptSharePayload({
-      type: "totp",
-      secret: "JBSWY3DP",
-      algorithm: "SHA1",
-      digits: 6,
-      period: 30,
-    });
-    const del = vi.fn(async () => {});
+  it("updates safe share codes across TOTP windows, including legacy issuedStep records", async () => {
+    const secret = "JBSWY3DP";
+    const encrypted = await encryptSharePayload({ secret, algorithm: "SHA1", digits: 6, period: 30 });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_010_000);
+    try {
+      let stored = JSON.stringify({ ...encrypted.record, max: 0, count: 0, ttl: 3600,
+        expireAt: Date.now() + 3_600_000, issuedStep: 1 });
+      const del = vi.fn(async () => {});
+      const context = {
+        request: new Request("https://example.com/api/share-code/demo", {
+          headers: { "X-Share-Code-Key": encrypted.key },
+        }),
+        env: { AUTH_KV: {
+          get: vi.fn(async () => stored),
+          put: vi.fn(async (key, raw) => { if (key === "sharecode:demo") stored = raw; }),
+          delete: del,
+        } },
+        params: { id: "demo" },
+      };
+      const first = await onShareCodeGetRequest(context);
+      expect(first.status).toBe(200);
+      const firstData = await first.json();
+      expect(firstData.code).toBe(await totp(secret));
+      expect(firstData.validForMs).toBe(30_000);
+      clock.mockReturnValue(Date.now() + 30_000);
+      const second = await onShareCodeGetRequest(context);
+      expect(second.status).toBe(200);
+      const secondData = await second.json();
+      expect(secondData.code).toBe(await totp(secret));
+      expect(secondData.code).not.toBe(firstData.code);
+      expect(secondData).not.toHaveProperty("secret");
+      expect(secondData).not.toHaveProperty("ct");
+      expect(secondData).not.toHaveProperty("iv");
+      expect(JSON.parse(stored).count).toBe(2);
+      expect(del).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not subtract server processing time twice from the browser countdown", async () => {
+    const encrypted = await encryptSharePayload({ secret: "JBSWY3DP", period: 30 });
+    const startedAt = 1_700_000_010_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    try {
+      const res = await onShareCodeGetRequest({
+        request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+        env: { AUTH_KV: {
+          get: vi.fn(async () => {
+            clock.mockReturnValue(startedAt + 2000);
+            return JSON.stringify({ ...encrypted.record, count: 0, max: 0, ttl: 0 });
+          }),
+          put: vi.fn(async () => { clock.mockReturnValue(startedAt + 4000); }),
+          delete: vi.fn(),
+        } },
+        params: { id: "demo" },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ secondsLeft: 26, validForMs: 30_000 });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("returns the new TOTP if KV work crosses a code boundary", async () => {
+    const secret = "JBSWY3DP";
+    const encrypted = await encryptSharePayload({ secret, period: 30 });
+    const startedAt = 1_700_000_010_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    try {
+      const res = await onShareCodeGetRequest({
+        request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+        env: { AUTH_KV: {
+          get: vi.fn(async () => {
+            clock.mockReturnValue(startedAt + 29_000);
+            return JSON.stringify({ ...encrypted.record, count: 0, max: 0, ttl: 0 });
+          }),
+          put: vi.fn(async () => { clock.mockReturnValue(startedAt + 31_000); }),
+          delete: vi.fn(),
+        } },
+        params: { id: "demo" },
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.code).toBe(await totp(secret));
+      expect(data.secondsLeft).toBe(29);
+      expect(data.validForMs).toBe(60_000);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("limits code lifetime to the share TTL and rejects the share after expiry", async () => {
+    const encrypted = await encryptSharePayload({ secret: "JBSWY3DP", period: 30 });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_010_000);
+    try {
+      let stored = JSON.stringify({ ...encrypted.record, count: 0, max: 0, ttl: 60,
+        expireAt: Date.now() + 5500 });
+      const del = vi.fn(async () => {});
+      const context = {
+        request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+        env: { AUTH_KV: {
+          get: vi.fn(async () => stored),
+          put: vi.fn(async (key, raw) => { if (key === "sharecode:demo") stored = raw; }),
+          delete: del,
+        } },
+        params: { id: "demo" },
+      };
+      const first = await onShareCodeGetRequest(context);
+      expect(first.status).toBe(200);
+      expect(await first.json()).toMatchObject({ validForMs: 5500, secondsLeft: 6 });
+      clock.mockReturnValue(Date.now() + 5501);
+      const expired = await onShareCodeGetRequest(context);
+      expect(expired.status).toBe(410);
+      expect(expired.headers.get("X-Share-Reason")).toBe("expired");
+      expect(del).toHaveBeenCalledWith("sharecode:demo");
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not return a code when the share TTL ends during KV work", async () => {
+    const encrypted = await encryptSharePayload({ secret: "JBSWY3DP", period: 30 });
+    const startedAt = 1_700_000_010_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    try {
+      const del = vi.fn(async () => {});
+      const res = await onShareCodeGetRequest({
+        request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
+        env: { AUTH_KV: {
+          get: vi.fn(async () => JSON.stringify({ ...encrypted.record, count: 0, max: 0,
+            ttl: 60, expireAt: startedAt + 2000 })),
+          put: vi.fn(async () => { clock.mockReturnValue(startedAt + 3000); }),
+          delete: del,
+        } },
+        params: { id: "demo" },
+      });
+      expect(res.status).toBe(410);
+      expect(res.headers.get("X-Share-Reason")).toBe("expired");
+      expect(await res.text()).toBe("Gone");
+      expect(del).toHaveBeenCalledWith("sharecode:demo");
+    } finally { clock.mockRestore(); }
+  });
+
+  it("handles malformed encrypted Secret data without leaking it or counting access", async () => {
+    const encrypted = await encryptSharePayload({ secret: 123456, period: 30 });
+    const put = vi.fn();
     const res = await onShareCodeGetRequest({
       request: new Request(`https://example.com/api/share-code/demo?k=${encrypted.key}`),
-      env: {
-        AUTH_KV: {
-          get: vi.fn(async () => JSON.stringify({ ...encrypted.record, count: 0, ttl: 0, expireAt: 0, issuedStep: 1 })),
-          put: vi.fn(async () => {}),
-          delete: del,
-        },
-      },
+      env: { AUTH_KV: {
+        get: vi.fn(async () => JSON.stringify(encrypted.record)), put, delete: vi.fn(),
+      } },
       params: { id: "demo" },
     });
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("Server Error");
+    expect(put).not.toHaveBeenCalled();
+  });
 
+  it("does not return a code or count an access with an incorrect code key", async () => {
+    const encrypted = await encryptSharePayload({ secret: "JBSWY3DP" });
+    const put = vi.fn(async () => {});
+    const res = await onShareCodeGetRequest({
+      request: new Request("https://example.com/api/share-code/demo", {
+        headers: { "X-Share-Code-Key": b64url(new Uint8Array(32)) },
+      }),
+      env: { AUTH_KV: {
+        get: vi.fn(async () => JSON.stringify(encrypted.record)), put, delete: vi.fn(),
+      } },
+      params: { id: "demo" },
+    });
     expect(res.status).toBe(410);
-    expect(res.headers.get("X-Share-Reason")).toBe("code-window-expired");
-    expect(del).toHaveBeenCalledWith("sharecode:demo");
-    expect(del).toHaveBeenCalledWith("sharekey:demo");
-    expect(del).toHaveBeenCalledWith("sharestat:demo");
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("cleans up safe share resources after the configured access limit", async () => {

@@ -7,6 +7,7 @@ import { fromB64url } from "./src/core/crypto.js";
 import { unwrapShareKeyWithPassword } from "./src/core/share-password.js";
 import { initTheme } from "./src/ui/theme.js";
 import { apiUrl, isLocalOnlyApp } from "./src/core/runtime.js";
+import { startCodeShareView } from "./src/share/code-view.js";
 
 // 客户端解密（完整模式用）
 async function decryptPayload(payload, keyB64url) {
@@ -61,89 +62,7 @@ async function main() {
 
 // ---- 安全模式（服务端计算验证码）----
 function startCodeModeView(sid, codeKey) {
-  setLabel("加载中…");
-  let ticker = null;
-  let expiresAt = 0;
-
-  async function fetchCode() {
-    try {
-      const res = await fetch(apiUrl(`/api/share-code/${encodeURIComponent(sid)}`), {
-        headers: { "X-Share-Code-Key": codeKey },
-        cache: "no-store",
-      });
-      if (res.status === 410) { stopTicker(); setLabel("分享已失效"); return null; }
-      if (res.status === 404) { stopTicker(); setLabel("分享不存在或已过期"); return null; }
-      if (!res.ok) { stopTicker(); setLabel("加载失败"); return null; }
-      const data = await res.json();
-      return data;
-    } catch {
-      return null;
-    }
-  }
-
-  function stopTicker() {
-    if (ticker) { clearInterval(ticker); ticker = null; }
-  }
-
-  function renderCountdown() {
-    const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
-    const leftEl = document.querySelector(".left");
-    if (leftEl) leftEl.textContent = String(left);
-    const periodText = document.getElementById("algo")?.textContent || "";
-    const periodMatch = periodText.match(/(\d+)s$/);
-    const period = periodMatch ? Number(periodMatch[1]) : 30;
-    const pct = (left / Math.max(1, period)) * 100;
-    const bar = document.querySelector(".bar");
-    if (bar) {
-      bar.style.width = pct + "%";
-      bar.style.background = left <= 5
-        ? "linear-gradient(90deg, #ef4444, #f59e0b)"
-        : left <= 10
-          ? "linear-gradient(90deg, #f59e0b, #fbbf24)"
-          : "linear-gradient(90deg, var(--ok), var(--primary))";
-    }
-    if (left <= 0) {
-      stopTicker();
-      const codeEl = document.getElementById("code");
-      if (codeEl) codeEl.textContent = "已过期";
-      const note = document.getElementById("note");
-      if (note) {
-        note.textContent = "此验证码已过期。安全模式不会继续生成后续验证码，请让分享方重新生成链接。";
-        note.style.display = "";
-      }
-    }
-  }
-
-  async function renderInitial() {
-    const data = await fetchCode();
-    if (!data) return;
-    setLabel(data.label || "共享验证码");
-    document.getElementById("code").textContent = formatCode(data.code, data.digits);
-    const algoEl = document.getElementById("algo");
-    if (algoEl) algoEl.textContent = `${data.algorithm} · ${data.digits}位 · ${data.period}s`;
-    const periodInfo = document.getElementById("period-info");
-    if (periodInfo) periodInfo.textContent = `周期 ${data.period}s`;
-    // Update subtitle to indicate safe mode
-    const subEl = document.querySelector(".share-head .sub");
-    if (subEl) subEl.textContent = "安全模式 · 仅展示验证码，不含 Secret";
-    expiresAt = Date.now() + Math.max(0, Number(data.secondsLeft) || 0) * 1000;
-    const note = document.getElementById("note");
-    if (note) {
-      note.textContent = typeof data.note === "string" && data.note.trim()
-        ? data.note
-        : "安全模式：仅展示当前验证码，接收方无法获取密钥，也不会继续生成后续验证码。";
-      note.style.display = "";
-    }
-    renderCountdown();
-    ticker = setInterval(renderCountdown, 1000);
-  }
-
-  renderInitial();
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && expiresAt) renderCountdown();
-  });
-  window.addEventListener("beforeunload", () => stopTicker());
-
+  startCodeShareView(sid, codeKey);
   bindCopyActions();
 }
 

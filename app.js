@@ -475,14 +475,14 @@ async function showShareLinkDialog({ label, link, ttl, maxAccess, copied, passwo
       if (passwordInput) passwordInput.value = password;
       if (status) status.textContent = showSecret
         ? `${formatShareResultStatus(label, copied, recoveryStored)}（对方可查看 Secret）`
-        : `${formatShareResultStatus(label, copied, recoveryStored)}（安全模式：对方只能看到当前验证码）`;
+        : `${formatShareResultStatus(label, copied, recoveryStored)}（安全模式：有效期内自动更新验证码，不含 Secret）`;
 
       const renderMeta = () => {
         const parts = [];
         if (ttl === "perm" || ttl === 0) parts.push("永久有效（高风险）");
         else if (expiresAt) parts.push(`剩余 ${formatShareCountdown(expiresAt - Date.now())}`);
         else parts.push("按服务端默认有效期");
-        if (maxAccess > 0) parts.push(showSecret ? `最多 ${maxAccess} 次访问（尽力限制）` : `首个验证码窗口内最多 ${maxAccess} 次访问（尽力限制）`);
+        if (maxAccess > 0) parts.push(showSecret ? `最多 ${maxAccess} 次访问（尽力限制）` : `最多 ${maxAccess} 次取码（自动刷新也计次，尽力限制）`);
         if (requiresPassword) parts.push("需访问口令");
         if (recoveryStored === false) parts.push("其他管理员设备无法重新复制完整链接");
         if (expiry) expiry.textContent = parts.join(" · ");
@@ -602,7 +602,7 @@ function chooseTtl() {
           <div class="section-card" style="margin-bottom:8px;">
             <div class="text-sm" style="font-weight:600; margin-bottom:6px;">安全模式（默认）：仅展示验证码</div>
             <div class="hint" style="line-height:1.7;">
-              对方只能看到当前验证码，拿不到 Secret。即使撤销链接，对方仍可看到已刷出的码（TOTP 码 30 秒轮换），但无法生成后续验证码。
+              分享有效期内，对方可查看自动更新的验证码，拿不到 Secret。到期或撤销后无法获取新验证码，已经显示的验证码会在当前周期结束时失效。
             </div>
           </div>
           <label class="row gap-2"><input type="radio" name="ttl" value="default" checked /> <span>默认（后端配置，常为 24 小时）</span></label>
@@ -612,7 +612,7 @@ function chooseTtl() {
           <div class="field mt-2" id="share-max-field">
             <label>最多访问次数 <span class="muted">（留空或 0 = 不限）</span></label>
             <input id="share-max" class="input" type="number" min="0" step="1" inputmode="numeric" placeholder="例如：1 / 3 / 10" />
-            <div class="hint" id="share-max-hint">安全模式仅在首个验证码窗口内有效；访问次数受 KV 并发限制影响，属于尽力限制。</div>
+            <div class="hint" id="share-max-hint">每次获取验证码计一次，自动刷新也计次；达到上限后停止获取新码。次数受 KV 并发限制影响，属于尽力限制。</div>
           </div>
           <div class="field mt-2">
             <label>备注 <span class="muted">（可选，最多 280 字，对方页面可见）</span></label>
@@ -629,7 +629,7 @@ function chooseTtl() {
               <div>
                 <div class="text-sm" style="font-weight:600;">允许对方查看 Secret 并导入自己的验证器</div>
                 <div class="hint" style="line-height:1.5; color:var(--danger);">
-                  ⚠️ 仅在确实需要对方导入验证器时才勾选。勾选后才会分享完整 Secret；不勾选时默认只分享当前验证码。</div>
+                  ⚠️ 仅在确实需要对方导入验证器时才勾选。勾选后才会分享完整 Secret；不勾选时默认仅展示自动更新的验证码，不公开 Secret。</div>
               </div>
             </label>
           </div>
@@ -656,7 +656,7 @@ function chooseTtl() {
         showSecretInput?.addEventListener("change", () => {
           if (maxHint) maxHint.textContent = showSecretInput.checked
             ? "访问次数由 Cloudflare KV 尽力限制；并发请求可能超过设定次数。"
-            : "安全模式仅在首个验证码窗口内有效；访问次数受 KV 并发限制影响，属于尽力限制。";
+            : "每次获取验证码计一次，自动刷新也计次；达到上限后停止获取新码。次数受 KV 并发限制影响，属于尽力限制。";
         });
         r.querySelector('[data-act="cancel"]').addEventListener("click", () => { doClose(); resolve({ cancel: true }); });
         r.querySelector('[data-act="ok"]').addEventListener("click", async () => {
@@ -671,7 +671,7 @@ function chooseTtl() {
           if (v === "perm") {
             const ok = await confirmDialog({
               title: "确认永久分享？",
-              message: `永久分享会${showSecret ? "长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret" : "让链接在首次打开前长期有效；打开后仅显示当期验证码，不会继续生成后续验证码"}。确定继续？`,
+              message: `永久分享会${showSecret ? "长期暴露这个 2FA Secret。即使之后撤销链接，也无法收回对方已经看到或保存的 Secret" : "让持有链接的人长期获取最新验证码，直到你主动撤销分享"}。确定继续？`,
               danger: true,
               okText: "仍然分享",
             });
